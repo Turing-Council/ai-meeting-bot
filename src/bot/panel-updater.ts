@@ -30,10 +30,15 @@ export class PanelUpdater {
       const panel = buildPanel(manifest, update);
       if (update.attachments) {
         const files = update.attachments.map((a) => new AttachmentBuilder(a.file, { name: a.name }));
-        await message.edit({ ...panel, files, attachments: [] });
-      } else {
-        await message.edit(panel);
+        try {
+          await message.edit({ ...panel, files, attachments: [] });
+          return;
+        } catch (error) {
+          // Usually a missing Attach Files permission: still show the results, just without the file.
+          this.logger.warn('Could not attach files to the control panel', { sessionId: manifest.id, error });
+        }
       }
+      await message.edit(panel);
     } catch (error) {
       this.logger.debug('Could not update control panel', { sessionId: manifest.id, error });
     }

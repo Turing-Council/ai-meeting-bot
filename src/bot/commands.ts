@@ -31,6 +31,7 @@ export const BOT_PERMISSIONS = new PermissionsBitField([
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.SendMessages,
   PermissionFlagsBits.EmbedLinks,
+  PermissionFlagsBits.AttachFiles, // transcript.md on the panel
   PermissionFlagsBits.ReadMessageHistory,
   PermissionFlagsBits.Connect,
   PermissionFlagsBits.ChangeNickname,

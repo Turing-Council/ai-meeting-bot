@@ -181,7 +181,7 @@ describe('inviteUrl', () => {
     expect(url.searchParams.get('client_id')).toBe('123');
     expect(url.searchParams.get('scope')).toBe('bot applications.commands');
     const perms = new PermissionsBitField(BigInt(url.searchParams.get('permissions')!));
-    expect(perms.has([PermissionFlagsBits.Connect, PermissionFlagsBits.SendMessages])).toBe(true);
+    expect(perms.has([PermissionFlagsBits.Connect, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles])).toBe(true);
   });
 });
 
