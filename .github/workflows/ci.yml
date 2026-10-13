@@ -1,0 +1,83 @@
+name: CI
+
+# Kept cheap: runs only when code or its config changes (docs-only commits skip it), one job,
+# cached node_modules and ffmpeg, and a newer push cancels the older run.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - 'vitest.config.ts'
+      - '.node-version'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - 'vitest.config.ts'
+      - '.node-version'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Static build with libopus; bump the version (and the cache key) to upgrade.
+      FFMPEG_BUILD: ffmpeg-n8.1-latest-linux64-gpl-8.1
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Restore node_modules
+        id: deps
+        uses: actions/cache@v6
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('.node-version', 'package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund
+
+      # ffmpeg isn't on the runner image; apt would take ~30 s every run, the cached binary ~1 s.
+      - name: Restore ffmpeg
+        id: ffmpeg
+        uses: actions/cache@v6
+        with:
+          path: ~/ffmpeg
+          key: ${{ env.FFMPEG_BUILD }}
+
+      - name: Download ffmpeg
+        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/ffmpeg
+          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_BUILD}.tar.xz" \
+            | tar -xJ -C ~/ffmpeg --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+
+      # Fails here (instead of silently skipping the integration tests) if ffmpeg is unusable.
+      - name: Check ffmpeg
+        run: |
+          echo "$HOME/ffmpeg" >> "$GITHUB_PATH"
+          ~/ffmpeg/ffmpeg -hide_banner -encoders | grep -q libopus
+          ~/ffmpeg/ffprobe -version | head -1
+
+      - run: npm run typecheck
+
+      - run: npm test
