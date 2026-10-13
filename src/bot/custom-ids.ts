@@ -1,5 +1,5 @@
-/** Actions behind the control panel's buttons and the bookmark modal. */
-export const PANEL_ACTIONS = ['pause', 'resume', 'bookmark', 'stop', 'bookmark-modal'] as const;
+/** Actions behind the control panel's buttons (incl. retrying failed processing) and the bookmark modal. */
+export const PANEL_ACTIONS = ['pause', 'resume', 'bookmark', 'stop', 'bookmark-modal', 'retry'] as const;
 export type PanelAction = (typeof PANEL_ACTIONS)[number];
 
 const PREFIX = 'meeting';

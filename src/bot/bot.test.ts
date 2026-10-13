@@ -49,6 +49,7 @@ describe('custom ids', () => {
   it('round-trips actions and session ids', () => {
     const id = panelCustomId('bookmark-modal', base.id);
     expect(parsePanelCustomId(id)).toEqual({ action: 'bookmark-modal', sessionId: base.id });
+    expect(parsePanelCustomId(panelCustomId('retry', base.id))).toEqual({ action: 'retry', sessionId: base.id });
   });
 
   it('rejects foreign or malformed ids', () => {
@@ -107,6 +108,50 @@ describe('buildPanel', () => {
   it('explains failures', () => {
     const embed = buildPanel({ ...base, status: 'failed', error: 'ffmpeg missing' }).embeds[0]!.toJSON();
     expect(embed.description).toContain('ffmpeg missing');
+  });
+
+  const recorded: SessionManifest = { ...base, status: 'recorded', endedAt: '2026-10-13T15:00:00.000Z', durationMs: 3_600_000 };
+
+  it('shows processing progress', () => {
+    const embed = buildPanel({
+      ...recorded,
+      processing: { transcribe: { status: 'done', attempts: 1 }, summarize: { status: 'running', attempts: 1 } },
+    }).embeds[0]!.toJSON();
+    expect(embed.fields!.find((f) => f.name === 'Processing')!.value).toBe('✅ Transcript · ⏳ Summary');
+  });
+
+  it('offers a retry when a processing step failed', () => {
+    const session: SessionManifest = {
+      ...recorded,
+      processing: { transcribe: { status: 'failed', attempts: 2, error: 'returned 401: bad key' }, summarize: { status: 'pending', attempts: 0 } },
+    };
+    const embed = buildPanel(session).embeds[0]!.toJSON();
+    expect(embed.fields!.find((f) => f.name === 'Processing')!.value).toBe('⚠️ Transcript · 🕓 Summary\nreturned 401: bad key');
+    expect(buttonIds(session)).toEqual([panelCustomId('retry', base.id)]);
+  });
+
+  it('shows the TL;DR, decisions and action items', () => {
+    const embed = buildPanel(
+      { ...recorded, processing: { transcribe: { status: 'done', attempts: 1 }, summarize: { status: 'done', attempts: 1 } } },
+      {
+        summary: {
+          tldr: 'Agreed to ship v1.',
+          keyPoints: ['Release plan'],
+          decisions: ['Ship v1 on Friday'],
+          actionItems: [
+            { task: 'Write release notes', owner: 'Bob', due: '2026-10-16' },
+            { task: 'Tell the team', owner: null, due: null },
+          ],
+          openQuestions: [],
+        },
+      },
+    ).embeds[0]!.toJSON();
+    expect(embed.description).toBe('**TL;DR** Agreed to ship v1.');
+    expect(embed.fields!.find((f) => f.name === '✅ Decisions (1)')!.value).toBe('• Ship v1 on Friday');
+    expect(embed.fields!.find((f) => f.name === '📌 Action items (2)')!.value).toBe(
+      '• Write release notes — **Bob** (due 2026-10-16)\n• Tell the team',
+    );
+    expect(embed.fields!.some((f) => f.name.startsWith('❓'))).toBe(false);
   });
 });
 

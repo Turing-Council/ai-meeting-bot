@@ -13,6 +13,7 @@ import {
 } from 'discord.js';
 import type { Config } from '../config.js';
 import type { Logger } from '../logger.js';
+import type { Pipeline } from '../pipeline/runner.js';
 import type { Person } from '../sessions/manifest.js';
 import { UserError, type SessionManager } from '../sessions/manager.js';
 import { BOOKMARK_TEXT_INPUT_ID, panelCustomId, parsePanelCustomId } from './custom-ids.js';
@@ -22,6 +23,7 @@ import { canControlRecording } from './permissions.js';
 
 export interface InteractionDeps {
   manager: SessionManager;
+  pipeline?: Pipeline | undefined;
   config: Config;
   logger: Logger;
 }
@@ -50,7 +52,7 @@ export async function handleInteraction(interaction: Interaction, deps: Interact
 
 async function handleMeetingCommand(
   interaction: ChatInputCommandInteraction<'cached'>,
-  { manager, config }: InteractionDeps,
+  { manager, pipeline, config }: InteractionDeps,
 ): Promise<void> {
   const sub = interaction.options.getSubcommand();
   const member = interaction.member;
@@ -80,7 +82,7 @@ async function handleMeetingCommand(
       if (!manager.getActive(interaction.guildId)) throw new UserError("I'm not recording anything in this server.");
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const session = await manager.stop(interaction.guildId, `stopped by ${member.displayName}`);
-      await interaction.editReply(stopSummary(session));
+      await interaction.editReply(stopSummary(session, pipeline));
       return;
     }
 
@@ -108,9 +110,17 @@ async function handleMeetingCommand(
   }
 }
 
-async function handleButton(interaction: ButtonInteraction<'cached'>, { manager, config }: InteractionDeps): Promise<void> {
+async function handleButton(interaction: ButtonInteraction<'cached'>, { manager, pipeline, config }: InteractionDeps): Promise<void> {
   const parsed = parsePanelCustomId(interaction.customId);
   if (!parsed) return;
+
+  if (parsed.action === 'retry') {
+    requireControl(interaction.member, config);
+    if (!pipeline?.enabled) throw new UserError('Processing is turned off (no speech-to-text provider is configured).');
+    await interaction.update(buildPanel(await pipeline.retry(parsed.sessionId)));
+    return;
+  }
+
   const session = manager.getActiveBySessionId(parsed.sessionId);
   if (!session) throw new UserError('This meeting is no longer being recorded.');
 
@@ -130,7 +140,7 @@ async function handleButton(interaction: ButtonInteraction<'cached'>, { manager,
       // Acknowledge now; stopping (mixdown) can take longer than Discord's 3 s limit.
       await interaction.deferUpdate();
       const stopped = await manager.stop(interaction.guildId, `stopped by ${interaction.member.displayName}`);
-      await interaction.followUp({ content: stopSummary(stopped), flags: MessageFlags.Ephemeral });
+      await interaction.followUp({ content: stopSummary(stopped, pipeline), flags: MessageFlags.Ephemeral });
       return;
     }
     case 'bookmark': {
@@ -173,13 +183,22 @@ function person(member: GuildMember): Person {
   return { id: member.id, name: member.displayName };
 }
 
-function stopSummary(session: { status: string; durationMs?: number | undefined; tracks: unknown[]; error?: string | undefined }): string {
+function stopSummary(
+  session: { status: string; durationMs?: number | undefined; tracks: unknown[]; error?: string | undefined },
+  pipeline: Pipeline | undefined,
+): string {
   const duration = session.durationMs !== undefined ? formatDuration(session.durationMs) : 'unknown length';
   if (session.status === 'failed') {
     return `⚠️ Recording stopped (${duration}), but saving the mixed audio failed: ${session.error ?? 'unknown error'}. The per-speaker tracks are kept.`;
   }
   const speakers = session.tracks.length === 0 ? 'nobody spoke' : `${session.tracks.length} speaker track(s)`;
-  return `⏹️ Recording saved: ${duration}, ${speakers}.`;
+  const next =
+    pipeline?.enabled && session.tracks.length > 0
+      ? pipeline.stepNames.includes('summarize')
+        ? ' The transcript and summary will appear on the panel.'
+        : ' The transcript will appear on the panel.'
+      : '';
+  return `⏹️ Recording saved: ${duration}, ${speakers}.${next}`;
 }
 
 async function replyEphemeral(interaction: RepliableInteraction, content: string): Promise<void> {

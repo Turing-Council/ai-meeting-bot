@@ -8,16 +8,17 @@ import {
 } from '@discordjs/voice';
 import type { Client, Guild, SendableChannels, VoiceBasedChannel, VoiceState } from 'discord.js';
 import { buildPanel } from '../bot/panel.js';
+import { PanelUpdater } from '../bot/panel-updater.js';
 import { truncate } from '../bot/format.js';
 import type { Config } from '../config.js';
+import { UserError } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { mixdown } from '../recorder/mixdown.js';
 import { MeetingRecorder } from '../recorder/recorder.js';
 import { createSessionId, UNFINISHED_STATUSES, type Person, type SessionManifest } from './manifest.js';
 import type { SessionStore } from './store.js';
 
-/** An error whose message is safe and useful to show to the Discord user. */
-export class UserError extends Error {}
+export { UserError };
 
 const CONNECT_TIMEOUT_MS = 20_000;
 const RECONNECT_GRACE_MS = 5_000;
@@ -53,6 +54,9 @@ export interface SessionManagerDeps {
   store: SessionStore;
   config: Config;
   logger: Logger;
+  panel?: PanelUpdater;
+  /** Called when a session's audio is saved and ready for processing (after a stop or a recovery). */
+  onRecorded?: (manifest: SessionManifest) => void;
   now?: () => number;
 }
 
@@ -68,6 +72,8 @@ export class SessionManager {
   private readonly store: SessionStore;
   private readonly config: Config;
   private readonly logger: Logger;
+  private readonly panel: PanelUpdater;
+  private readonly onRecorded: ((manifest: SessionManifest) => void) | undefined;
   private readonly now: () => number;
 
   private readonly active = new Map<string, ActiveSession>();
@@ -79,6 +85,8 @@ export class SessionManager {
     this.store = deps.store;
     this.config = deps.config;
     this.logger = deps.logger;
+    this.panel = deps.panel ?? new PanelUpdater(deps.client, deps.logger);
+    this.onRecorded = deps.onRecorded;
     this.now = deps.now ?? Date.now;
   }
 
@@ -349,6 +357,7 @@ export class SessionManager {
     await this.mixAndComplete(manifest);
     await this.refreshPanel(manifest);
     log.info('Recording stopped', { reason, status: manifest.status, durationMs: manifest.durationMs });
+    this.notifyRecorded(manifest);
     return manifest;
   }
 
@@ -381,6 +390,16 @@ export class SessionManager {
 
     await this.mixAndComplete(manifest);
     await this.refreshPanel(manifest);
+    this.notifyRecorded(manifest);
+  }
+
+  private notifyRecorded(manifest: SessionManifest): void {
+    if (manifest.status !== 'recorded' || manifest.tracks.length === 0) return;
+    try {
+      this.onRecorded?.(structuredClone(manifest));
+    } catch (error) {
+      this.logger.error('onRecorded listener failed', { sessionId: manifest.id, error });
+    }
   }
 
   private async mixAndComplete(manifest: SessionManifest): Promise<void> {
@@ -481,16 +500,8 @@ export class SessionManager {
     }, PANEL_REFRESH_DEBOUNCE_MS);
   }
 
-  private async refreshPanel(manifest: SessionManifest): Promise<void> {
-    if (!manifest.panelChannelId || !manifest.panelMessageId) return;
-    try {
-      const channel = await this.client.channels.fetch(manifest.panelChannelId);
-      if (!channel?.isTextBased()) return;
-      const message = await channel.messages.fetch(manifest.panelMessageId);
-      await message.edit(buildPanel(manifest));
-    } catch (error) {
-      this.logger.debug('Could not update control panel', { sessionId: manifest.id, error });
-    }
+  private refreshPanel(manifest: SessionManifest): Promise<void> {
+    return this.panel.update(manifest);
   }
 
   private async setRecordingNickname(guild: Guild, recording: boolean): Promise<void> {

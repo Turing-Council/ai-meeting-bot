@@ -1,5 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
-import type { SessionManifest, SessionStatus } from '../sessions/manifest.js';
+import { PIPELINE_STEPS, type SessionManifest, type SessionStatus, type StepName, type StepStatus } from '../sessions/manifest.js';
+import type { ActionItem, Summary } from '../summarize/summary.js';
 import { panelCustomId } from './custom-ids.js';
 import { discordRelativeTime, formatDuration, formatOffset, truncate } from './format.js';
 
@@ -20,6 +21,17 @@ const STATUS_COLOR: Record<SessionStatus, number> = {
 };
 
 const MAX_LISTED_BOOKMARKS = 5;
+const MAX_LISTED_SUMMARY_ITEMS = 6;
+/** Summary fields are kept short so the whole embed stays under Discord's 6000-character limit. */
+const SUMMARY_FIELD_MAX = 600;
+
+const STEP_LABEL: Record<StepName, string> = { transcribe: 'Transcript', summarize: 'Summary' };
+const STEP_ICON: Record<StepStatus, string> = { pending: '🕓', running: '⏳', done: '✅', failed: '⚠️' };
+
+export interface PanelExtras {
+  /** Shown once processing has produced it. */
+  summary?: Summary | undefined;
+}
 
 export interface PanelMessage {
   embeds: EmbedBuilder[];
@@ -27,7 +39,7 @@ export interface PanelMessage {
 }
 
 /** The control panel message for a session, in its current state. */
-export function buildPanel(session: SessionManifest): PanelMessage {
+export function buildPanel(session: SessionManifest, extras: PanelExtras = {}): PanelMessage {
   const embed = new EmbedBuilder()
     .setTitle(truncate(session.title, 256))
     .setColor(STATUS_COLOR[session.status])
@@ -67,10 +79,55 @@ export function buildPanel(session: SessionManifest): PanelMessage {
     embed.setDescription(truncate(`Saving the recording failed: ${session.error}`, 4096));
   }
 
+  const steps = PIPELINE_STEPS.flatMap((name) => {
+    const state = session.processing?.[name];
+    return state ? [`${STEP_ICON[state.status]} ${STEP_LABEL[name]}`] : [];
+  });
+  if (steps.length > 0) {
+    const failure = PIPELINE_STEPS.map((name) => session.processing?.[name]).find((s) => s?.status === 'failed');
+    const value = failure?.error ? `${steps.join(' · ')}\n${truncate(failure.error, 300)}` : steps.join(' · ');
+    embed.addFields({ name: 'Processing', value });
+  }
+
+  if (extras.summary) addSummary(embed, extras.summary);
+
   return { embeds: [embed], components: buildButtons(session) };
 }
 
+function addSummary(embed: EmbedBuilder, summary: Summary): void {
+  if (summary.tldr) embed.setDescription(`**TL;DR** ${truncate(summary.tldr, 1000)}`);
+  const sections: [string, string[]][] = [
+    ['✅ Decisions', summary.decisions],
+    ['📌 Action items', summary.actionItems.map(formatActionItem)],
+    ['❓ Open questions', summary.openQuestions],
+  ];
+  for (const [name, items] of sections) {
+    if (items.length === 0) continue;
+    const shown = items.slice(0, MAX_LISTED_SUMMARY_ITEMS).map((item) => `• ${truncate(item, 200)}`);
+    if (items.length > shown.length) shown.push(`…and ${items.length - shown.length} more`);
+    embed.addFields({ name: `${name} (${items.length})`, value: truncate(shown.join('\n'), SUMMARY_FIELD_MAX) });
+  }
+}
+
+function formatActionItem(item: ActionItem): string {
+  const owner = item.owner ? ` — **${item.owner}**` : '';
+  const due = item.due ? ` (due ${item.due})` : '';
+  return `${item.task}${owner}${due}`;
+}
+
 function buildButtons(session: SessionManifest): ActionRowBuilder<ButtonBuilder>[] {
+  const processingFailed = Object.values(session.processing ?? {}).some((state) => state.status === 'failed');
+  if (processingFailed) {
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(panelCustomId('retry', session.id))
+          .setLabel('Retry processing')
+          .setEmoji('🔁')
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ];
+  }
   if (session.status !== 'recording' && session.status !== 'paused') return [];
 
   const pauseButton =
