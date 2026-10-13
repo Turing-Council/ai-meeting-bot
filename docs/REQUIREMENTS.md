@@ -11,8 +11,8 @@ closed, private use, so compliance is out of scope.
 |---|---|
 | Notion | Bot uses **new dedicated databases** (Meetings + Action Items) that it creates during setup |
 | Trigger | **Slash command** + **auto-record on channel join** |
-| Speech-to-text (STT) | **Pluggable provider interface**, choice deferred (cloud API or self-hosted Whisper) |
-| Summaries (LLM) | **Pluggable provider interface**, choice deferred (any cloud or self-hosted LLM) |
+| Speech-to-text (STT) | **Pluggable provider interface**. First adapter speaks the OpenAI-compatible API (hosted or self-hosted Whisper); provider choice still open |
+| Summaries (LLM) | **Pluggable provider interface**. First adapter speaks the OpenAI-compatible API (any hosted or self-hosted LLM); provider choice still open |
 | Language | **English only** |
 | Notion plan | **Paid**, so recordings and transcripts are attached directly through the Notion File Upload API (multipart) |
 | Hosting | **VPS with Dokploy** (Docker image, persistent volume, ffmpeg inside the image) |
@@ -107,8 +107,8 @@ closed, private use, so compliance is out of scope.
   - `stt/` holds the provider interface and adapters.
   - `summarize/` holds the LLM provider interface and adapters, the prompt and the JSON schema.
   - `notion/` holds the setup, page builder and file uploads.
-- **State:** SQLite on the volume stores sessions, job steps and config. That is enough for one
-  server.
+- **State:** one directory per session on the volume, with a JSON manifest holding the session
+  and its job-step state. No database is needed for one server.
 - **Deploy:** a Dockerfile (Node + ffmpeg), deployed from git through Dokploy, with secrets in
   environment variables: `DISCORD_TOKEN`, `NOTION_TOKEN`, `LLM_*`, `STT_*`.
 
