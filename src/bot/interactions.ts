@@ -232,7 +232,8 @@ function stopSummary(session: { durationMs?: number | undefined; tracks: unknown
     : steps.includes('transcribe')
       ? 'the mixed audio and transcript'
       : 'the mixed audio';
-  return `⏹️ Recording saved: ${duration}, ${session.tracks.length} speaker track(s). Progress and ${results} will appear on the panel.`;
+  const where = steps.includes('publish') ? 'on the panel and in Notion' : 'on the panel';
+  return `⏹️ Recording saved: ${duration}, ${session.tracks.length} speaker track(s). Progress and ${results} will appear ${where}.`;
 }
 
 async function replyEphemeral(interaction: RepliableInteraction, content: string): Promise<void> {
