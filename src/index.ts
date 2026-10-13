@@ -51,7 +51,7 @@ async function main(): Promise<void> {
       .catch((error: unknown) => logger.error('Resuming processing failed', { error }));
   });
   client.on(Events.InteractionCreate, (interaction) => {
-    void handleInteraction(interaction, { manager, pipeline, config, logger });
+    void handleInteraction(interaction, { manager, store, pipeline, config, logger });
   });
   client.on(Events.VoiceStateUpdate, (oldState, newState) => manager.handleVoiceStateUpdate(oldState, newState));
   client.on(Events.Error, (error) => logger.error('Discord client error', { error }));

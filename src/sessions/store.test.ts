@@ -67,6 +67,13 @@ describe('SessionStore', () => {
     expect(ids).toEqual(['20261012-090000-aaaa', '20261013-120000-bbbb']);
   });
 
+  it('finds the latest session of a guild', async () => {
+    await store.create(manifest('20261013-100000-aaaa'));
+    await store.create({ ...manifest('20261013-110000-bbbb'), guildId: 'other' });
+    expect((await store.latest(manifest('x').guildId))?.id).toBe('20261013-100000-aaaa');
+    expect(await store.latest('nobody')).toBeUndefined();
+  });
+
   it('list() returns [] when the data directory does not exist yet', async () => {
     expect(await new SessionStore(path.join(root, 'missing'), silentLogger).list()).toEqual([]);
   });

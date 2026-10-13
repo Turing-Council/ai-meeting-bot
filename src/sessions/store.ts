@@ -39,18 +39,19 @@ export class SessionStore {
     return SessionManifest.parse(JSON.parse(raw));
   }
 
+  /** The guild's most recent readable session (IDs sort chronologically). */
+  async latest(guildId: string): Promise<SessionManifest | undefined> {
+    for (const id of (await this.ids()).reverse()) {
+      const manifest = await this.load(id).catch(() => undefined);
+      if (manifest?.guildId === guildId) return manifest;
+    }
+    return undefined;
+  }
+
   /** All readable sessions, oldest first. Unreadable ones are logged and skipped. */
   async list(): Promise<SessionManifest[]> {
-    let entries: string[];
-    try {
-      entries = (await readdir(this.root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-
     const manifests: SessionManifest[] = [];
-    for (const id of entries.sort()) {
+    for (const id of await this.ids()) {
       try {
         manifests.push(await this.load(id));
       } catch (error) {
@@ -58,6 +59,17 @@ export class SessionStore {
       }
     }
     return manifests;
+  }
+
+  /** Session directory names, oldest first. */
+  private async ids(): Promise<string[]> {
+    try {
+      const entries = await readdir(this.root, { withFileTypes: true });
+      return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
   }
 }
 

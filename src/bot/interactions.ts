@@ -13,9 +13,11 @@ import {
 } from 'discord.js';
 import type { Config } from '../config.js';
 import type { Logger } from '../logger.js';
+import { loadSummary } from '../pipeline/index.js';
 import type { Pipeline } from '../pipeline/runner.js';
 import type { Person } from '../sessions/manifest.js';
 import { UserError, type SessionManager } from '../sessions/manager.js';
+import type { SessionStore } from '../sessions/store.js';
 import { BOOKMARK_TEXT_INPUT_ID, panelCustomId, parsePanelCustomId } from './custom-ids.js';
 import { formatDuration, formatOffset } from './format.js';
 import { buildPanel } from './panel.js';
@@ -23,6 +25,7 @@ import { canControlRecording } from './permissions.js';
 
 export interface InteractionDeps {
   manager: SessionManager;
+  store: SessionStore;
   pipeline: Pipeline;
   config: Config;
   logger: Logger;
@@ -52,7 +55,7 @@ export async function handleInteraction(interaction: Interaction, deps: Interact
 
 async function handleMeetingCommand(
   interaction: ChatInputCommandInteraction<'cached'>,
-  { manager, pipeline, config }: InteractionDeps,
+  { manager, store, pipeline, config }: InteractionDeps,
 ): Promise<void> {
   const sub = interaction.options.getSubcommand();
   const member = interaction.member;
@@ -97,11 +100,19 @@ async function handleMeetingCommand(
 
     case 'status': {
       const session = manager.getActive(interaction.guildId);
-      if (!session) {
-        await replyEphemeral(interaction, 'Not recording right now. Use `/meeting start` from a voice channel.');
+      if (session) {
+        await interaction.reply({ ...buildPanel(session), components: [], flags: MessageFlags.Ephemeral });
         return;
       }
-      await interaction.reply({ ...buildPanel(session), components: [], flags: MessageFlags.Ephemeral });
+      // Not recording: show the last meeting instead, with its processing state and summary.
+      const last = await store.latest(interaction.guildId);
+      const content = 'Not recording right now. Use `/meeting start` from a voice channel.';
+      if (!last) {
+        await replyEphemeral(interaction, content);
+        return;
+      }
+      const panel = buildPanel(last, { summary: await loadSummary(store, last) });
+      await interaction.reply({ content: `${content} Last meeting:`, ...panel, components: [], flags: MessageFlags.Ephemeral });
       return;
     }
 
