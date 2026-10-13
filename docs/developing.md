@@ -23,21 +23,25 @@ tests.
 ## Current scope (M0–M2)
 
 **In:**
-- Slash commands `/meeting start [title] [type]`, `stop`, `note <text>`, `status`
+- Slash commands `/meeting start [title] [type]`, `stop`, `note <text>`, `status` (current
+  recording, or the last meeting with its processing state and summary)
 - A control panel message with Pause/Resume, Bookmark (modal) and Stop buttons
-- Per-speaker recording, time-aligned, as Ogg Opus; ffmpeg mixdown to `mixed.ogg` on stop
+- Per-speaker recording, time-aligned, as Ogg Opus; ffmpeg mixdown to `mixed.ogg` as the first
+  processing step
 - Auto-leave when the voice channel is empty (default 2 min)
 - 🔴 nickname prefix while recording
 - Optional recorder role (`RECORDER_ROLE_ID`)
-- Crash recovery: interrupted sessions get finished and mixed on the next start
+- Crash recovery: interrupted sessions get finished and processed on the next start
 - Graceful shutdown on `SIGTERM` (Dokploy redeploys)
-- Processing after each recording: per-speaker transcription → speaker-labelled transcript →
-  structured summary (TL;DR, key points, decisions, action items, open questions)
+- Processing after each recording: mix; per-speaker transcription → speaker-labelled transcript
+  (with bookmarks) → structured summary (TL;DR, key points, decisions, action items, open questions)
 - Any provider through the OpenAI-compatible APIs (`STT_*`, `LLM_*`), plus `mock` providers
 - Progress, TL;DR, action items and the attached `transcript.md` on the control panel; a
   Retry button when a step fails
-- Jobs resume after a restart; per-chunk caches avoid paying twice
+- Jobs resume after a restart; per-chunk caches avoid paying twice; a session lock keeps the bot
+  and the script from processing the same session at once
 - `process-session` script to (re)process a session by hand
+- CI on GitHub Actions: type check + all tests, including the ffmpeg ones
 
 **Out (later milestones):**
 - Anything in Notion (M3), including uploading audio/transcript and the "Notion link" on the panel
@@ -74,13 +78,13 @@ decodes audio. If a future feature needs to play audio into a channel, add one t
 Discord voice ──per-user Opus packets──▶ MeetingRecorder ──▶ TimelineTrack ──▶ OggOpusWriter ──▶ tracks/<userId>.ogg
                                                ▲                (fills gaps        (pages to disk)
 SessionManager ── start/pause/stop ────────────┘                 with silence)
-     │                                                                   stop ──▶ ffmpeg amix ──▶ mixed.ogg
      ├── manifest.json (SessionStore, atomic writes)
      ├── control panel (PanelUpdater)
      ├── crash recovery on boot
-     └── onRecorded ──▶ Pipeline (one job at a time, state in manifest.processing)
-                          1. transcribe: silencedetect → speech chunks → SttProvider → merge → transcript.json/.md
-                          2. summarize:  transcript + bookmarks → Summarizer (map-reduce) → ChatModel → summary.json
+     └── onRecorded ──▶ Pipeline (one job at a time, state in manifest.processing, processing.lock)
+                          1. mix:        ffmpeg amix → mixed.ogg
+                          2. transcribe: silencedetect → speech chunks → SttProvider → merge → transcript.json/.md
+                          3. summarize:  transcript + bookmarks → Summarizer (map-reduce) → ChatModel → summary.json
                           └── progress/results ──▶ PanelUpdater (TL;DR, action items, transcript.md attached)
 ```
 
@@ -99,8 +103,9 @@ SessionManager ── start/pause/stop ────────────┘  
 | `src/sessions/store.ts` | One directory per session, atomic manifest writes |
 | `src/sessions/manager.ts` | Session lifecycle: join/leave, pause, bookmarks, empty timeout, nickname, panel, recovery |
 | `src/bot/` | Slash command definitions, interaction router, panel builder + updater, permissions, formatting |
-| `src/pipeline/runner.ts` | Job queue and step state machine: resume after restart, stop on failure, retry |
-| `src/pipeline/transcribe-step.ts` · `summarize-step.ts` | The two steps, with per-chunk caches under `work/` |
+| `src/pipeline/runner.ts` | Job queue and step state machine: dependencies between steps, resume after restart, retry, reset |
+| `src/pipeline/mix-step.ts` · `transcribe-step.ts` · `summarize-step.ts` | The steps; transcribe/summarize cache per chunk under `work/` |
+| `src/pipeline/lock.ts` | Per-session lock file with a heartbeat; stale locks are taken over |
 | `src/transcript/speech.ts` | ffmpeg `silencedetect` → speech regions → chunks; chunk extraction |
 | `src/transcript/transcript.ts` | Merging per-speaker segments into turns; `transcript.json` schema; Markdown |
 | `src/stt/` | `SttProvider` interface, `mock` and `openai-compatible` adapters |
@@ -117,14 +122,17 @@ SessionManager ── start/pause/stop ────────────┘  
   1 MB per hour of silence). Gaps under 100 ms are treated as network jitter and not filled.
   Aligned tracks mean M2 can transcribe each speaker separately and still get correct
   meeting-relative timestamps.
-- **Session status:** `recording ⇄ paused → finalizing → recorded | failed`. Anything still in
-  `recording/paused/finalizing` at boot was interrupted and gets recovered. `failed` means only
-  the mixdown failed; the per-speaker tracks are always kept.
+- **Session status:** `recording ⇄ paused → finalizing → recorded`. Anything still in
+  `recording/paused/finalizing` at boot was interrupted and gets recovered. `recorded` only means
+  the tracks are on disk; everything after that, including the mixdown, is a processing step
+  with its own retry. (`failed` appears only in sessions from before that change, where the
+  mixdown failed; processing treats them as `recorded`.)
 - **Crash safety.** Ogg pages are written as they fill (at most 1 s of audio) and flushed every
   2 s. A file cut off mid-page still decodes. Recovery also picks up track files that were
   created but not yet listed in the manifest.
-- **Shutdown doesn't mix.** On `SIGTERM` the bot closes files, leaves voice and marks sessions
-  `finalizing`, so a redeploy isn't held up by ffmpeg. The next start does the mixdown.
+- **Shutdown is quick.** On `SIGTERM` the bot closes files, leaves voice and marks sessions
+  `finalizing`. The next start completes them and hands them to processing. A processing job
+  cut off by the shutdown leaves its step `running`, and it resumes too.
 - **Subscriptions are long-lived.** One receive stream per user for the whole meeting
   (`EndBehaviorType.Manual`). If a stream breaks (e.g. a decryption error during a DAVE key
   change), the bot resubscribes the next time that user speaks and keeps writing to the same file.
@@ -138,9 +146,16 @@ SessionManager ── start/pause/stop ────────────┘  
   diarization. Each track is cut at silences of 1 s or more (`-40dB`), regions within 10 s are
   grouped into one chunk (max 10 min), padded 250 ms. Silence is never sent: providers bill per
   audio minute, and Whisper-style models invent text on silence. Segments with Whisper's
-  "no speech + low confidence" signature are dropped as well.
+  "no speech + low confidence" signature are dropped as well (needs `verbose_json`), and so are
+  lines models invent from noise that nobody says in a meeting ("Thanks for watching",
+  "Subtitles by…"), in every response format.
+- **Steps declare what they need.** `summarize` needs `transcribe`; `mix` needs nothing. A failed
+  step blocks only the steps that need it, so a broken mixdown doesn't stop the transcript.
+- **Session lock.** Processing holds `processing.lock` in the session directory. The holder
+  touches it every 30 s; a lock untouched for 2 min was left by a dead process and is taken
+  over. The bot skips a locked session (and logs who holds it); the script stops with a message.
 - **Pipeline state in the manifest, not SQLite.** The spec suggested SQLite for job state; per-step
-  state in `manifest.json` (`processing.transcribe/summarize`: status, attempts, error) turned out
+  state in `manifest.json` (`processing.mix/transcribe/summarize`: status, attempts, error) turned out
   to be enough for one server and keeps a session self-contained in its directory. Revisit if
   M3/M4 need cross-session queries.
 - **Retries at two levels.** Each HTTP call retries transient failures (network, 408, 429, 5xx;
@@ -158,6 +173,7 @@ SessionManager ── start/pause/stop ────────────┘  
 ```
 $DATA_DIR/sessions/<YYYYMMDD-HHMMSS-xxxx>/
   manifest.json
+  processing.lock           # only while being processed
   tracks/<discordUserId>.ogg
   mixed.ogg
   transcript.json           # { version, sessionId, turns: [{ speakerId, speaker, startMs, endMs, text }] }
@@ -186,12 +202,13 @@ npm run register         # after changing commands
 npm run dev              # tsx watch with .env (STT_PROVIDER=mock LLM_PROVIDER=mock for a free end-to-end run)
 npm run process -- --list            # sessions + processing state
 npm run process -- <id> [--force]    # (re)process one session offline
-npm test                 # unit tests; ffmpeg tests skip if ffmpeg is missing
+npm test                 # all tests; the ffmpeg ones skip if ffmpeg is missing (brew install ffmpeg)
 npm run typecheck
 npm run build            # → dist/
-docker build --target test .      # all tests incl. real-ffmpeg integration
-docker build --target runtime -t turing-voice-bot .
 ```
+
+The Dockerfile is for Dokploy. It still has a `test` stage, but day-to-day testing is local
+(`npm test`) and in CI, not Docker.
 
 npm 11 only runs dependency install scripts you've approved. `esbuild` (used by `tsx`) is
 approved in `package.json` under `allowScripts`. If an update to it fails, run
@@ -202,18 +219,23 @@ approved in `package.json` under `allowScripts`. If an update to it fails, run
 - Unit-test the pure parts thoroughly: Ogg/Opus, timeline alignment, manifest store, panel,
   custom IDs, config, permissions.
 - `MeetingRecorder` is tested against a fake voice receiver: speaking events and packet streams.
-- Crash recovery is tested with `true`/`false` standing in for ffmpeg.
+- Crash recovery is tested against a real session directory, checking what it hands to processing.
+- The pipeline runner is tested with fake steps: order, dependencies, retry, resume, reset, the
+  lock (held and stale), and old `failed` sessions.
 - `ffmpeg.integration.test.ts` encodes a real Opus tone and checks decoding, timeline placement
   (`silencedetect`), the mixdown, and a truncated "crashed" file. It only runs where ffmpeg is
-  installed, which includes the Docker `test` stage.
+  installed: in CI, or locally after `brew install ffmpeg`.
 - Provider adapters are tested against a local fake HTTP server: request shape (multipart,
   JSON body, auth header), parsing, retry and fail-fast behaviour.
 - The summarizer is tested with a scripted `ChatModel`: single call, map-reduce, JSON repair,
   caching.
 - `pipeline.integration.test.ts` places Opus tones on two speakers' tracks and runs the real
-  pipeline (ffmpeg speech detection and chunking, fake STT, mock LLM). It checks that only
-  speech is sent, that lines land at the right time with the right speaker, and that a re-run
-  makes no new STT calls. Like the other ffmpeg tests, it runs in the Docker `test` stage.
+  pipeline (mixdown, ffmpeg speech detection and chunking, fake STT, mock LLM). It checks the
+  mix, that only speech is sent, that lines land at the right time with the right speaker, and
+  that a re-run makes no new STT calls. Like the other ffmpeg tests, it runs in CI.
+- CI (`.github/workflows/ci.yml`): one job on pushes to `main` and on PRs, only when code or its
+  config changes. It caches `node_modules` (keyed on the lockfile) and a static ffmpeg build,
+  fails if ffmpeg lacks libopus instead of silently skipping tests, and cancels superseded runs.
 - Live Discord behavior and real providers are covered by the manual checklist in the README.
 
 ## Open points for M2

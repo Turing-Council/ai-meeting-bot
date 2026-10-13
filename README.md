@@ -11,13 +11,14 @@ Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Status: **M0 Setup, M1 R
 - A **control panel** in the voice channel's chat shows a live timer and participants, with
   **Pause / Resume · Bookmark · Stop** buttons.
 - `/meeting note <text>` (or the 📝 button) adds a timestamped bookmark.
-- `/meeting stop` (or ⏹) saves the recording; `/meeting status` shows the current one.
+- `/meeting stop` (or ⏹) saves the recording. `/meeting status` shows the current recording, or
+  the last meeting with its processing state and summary.
 - The bot leaves automatically when the channel has been empty for 2 minutes (configurable).
 - While recording, the bot's nickname gets a 🔴 prefix.
 - **Crash-safe:** audio reaches disk every ~2 s. If the bot crashes or is redeployed mid-meeting,
-  the session is finished and mixed automatically on the next start.
-- **Transcript and summary** (when a provider is configured): after the recording, the panel
-  shows progress, then the TL;DR, decisions, action items and open questions, with
+  the session is finished and processed automatically on the next start.
+- **Mix, transcript and summary:** after the recording, the panel shows progress, then (when
+  providers are configured) the TL;DR, decisions, action items and open questions, with
   `transcript.md` attached. If a step fails, a **Retry processing** button appears.
 - **Any AI provider:** speech-to-text and the LLM are configured separately, against any server
   that speaks the common OpenAI-compatible API, hosted or self-hosted.
@@ -29,8 +30,8 @@ Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Status: **M0 Setup, M1 R
 Discord sends each speaker's audio as a separate stream of Opus packets, only while they talk.
 The bot writes those packets as-is (no re-encoding) into one Ogg Opus file per speaker and
 fills the gaps with 3-byte silence frames. That keeps every track aligned to the meeting
-clock, which matters later for speaker-labelled, timestamped transcripts. On stop, ffmpeg mixes
-the tracks into `mixed.ogg`.
+clock, which matters later for speaker-labelled, timestamped transcripts. After the recording,
+processing mixes the tracks into `mixed.ogg` with ffmpeg.
 
 ```
 data/sessions/<session-id>/
@@ -39,28 +40,31 @@ data/sessions/<session-id>/
   mixed.ogg            # everyone, mixed
 ```
 
-Session status: `recording ⇄ paused → finalizing → recorded` (or `failed` if mixing failed;
-the per-speaker tracks are always kept).
+Session status: `recording ⇄ paused → finalizing → recorded`. `recorded` means every track is
+safely on disk; what happens next is processing.
 
 ## How processing works
 
-Once a session is `recorded`, a job runs two steps, one session at a time:
+Once a session is `recorded`, a job runs these steps, one session at a time:
 
-1. **Transcribe.** For each speaker's track, ffmpeg finds the stretches with speech
+1. **Mix.** ffmpeg mixes the tracks into `mixed.ogg`. Always runs.
+2. **Transcribe** (when `STT_PROVIDER` is set). For each speaker's track, ffmpeg finds the stretches with speech
    (`silencedetect`) and cuts them into small mono chunks. Only those chunks are sent to the
    speech-to-text provider, never the silence (providers bill per audio minute, and silence makes
    Whisper-style models invent text). Each line keeps its speaker and its time on the meeting
    clock, and all speakers are merged into `transcript.json` and `transcript.md`
-   (`**[00:12:31] Alice:** …`).
-2. **Summarize.** The transcript, the participant list and the bookmarks go to the LLM, which
+   (`**[00:12:31] Alice:** …`, with bookmarks shown where they were made).
+3. **Summarize** (when `LLM_PROVIDER` is also set). The transcript, the participant list and the bookmarks go to the LLM, which
    returns JSON: TL;DR, key points, decisions, action items (task, owner, due date) and open
    questions. The JSON is validated; long meetings are summarized in parts and then combined.
    Result: `summary.json`.
 
-Each step's state is kept in `manifest.json`. A job cut short by a restart resumes on the next
-start, and results of each speech chunk and LLM call are cached under `work/`, so a retry
-doesn't pay for the same audio twice. Network errors, rate limits and 5xx responses are retried
-automatically.
+Each step's state is kept in `manifest.json`. A failed step waits for **Retry processing** and
+blocks only the steps that need its output: a failed mix doesn't stop the transcript. A job cut
+short by a restart resumes on the next start, and results of each speech chunk and LLM call are
+cached under `work/`, so a retry doesn't pay for the same audio twice. Network errors, rate
+limits and 5xx responses are retried automatically. While a session is processed it holds a
+`processing.lock` file, so the bot and the reprocess script never work on it at the same time.
 
 ```
 data/sessions/<session-id>/
@@ -127,7 +131,7 @@ Copy `.env.example` to `.env` and fill it in.
 ## Run locally
 
 Requires Node.js ≥ 22.12 and ffmpeg (`brew install ffmpeg`). Without ffmpeg, recording still
-works but sessions end as `failed` with no `mixed.ogg`.
+works, but the mix and transcribe steps fail (and can be retried once ffmpeg is there).
 
 ```bash
 npm install
@@ -161,20 +165,25 @@ node dist/scripts/process-session.js <session-id>         # resume, retrying fai
 node dist/scripts/process-session.js <session-id> --force # start over, ignoring caches
 ```
 
-Locally: `npm run process -- <session-id>`. Don't reprocess a session the running bot is
-processing at the same time.
+Locally: `npm run process -- <session-id>`. If the bot is processing that session at the same
+time, the script stops and says so (and vice versa).
 
 ## Tests
 
 ```bash
-npm test                         # unit tests (ffmpeg tests are skipped if ffmpeg is missing)
+npm test           # all tests; the ffmpeg integration tests are skipped if ffmpeg is missing
 npm run typecheck
-docker build --target test .     # everything, including real-ffmpeg integration tests
 ```
 
 The ffmpeg integration tests encode a real Opus tone, push it through the recorder at a known
 time, and check with ffmpeg that the file decodes, the speech lands at the right timestamp, the
-mix keeps both speakers in place, and a file cut off mid-write (a crash) still mixes.
+mix keeps both speakers in place, a file cut off mid-write (a crash) still mixes, and the full
+processing pipeline puts each line at the right time and speaker.
+
+**CI** (`.github/workflows/ci.yml`) runs the type check and every test, including the ffmpeg
+ones, on pushes to `main` and on pull requests. To keep it cheap it only runs when code or its
+config changes, caches `node_modules` and a static ffmpeg build, and cancels a run when a newer
+push arrives.
 
 ### Manual check on a test server
 
@@ -201,7 +210,7 @@ src/
   bot/                     slash commands, buttons/modals, control panel
   recorder/                Opus/Ogg writer, time-aligned tracks, receiver → files, ffmpeg mixdown
   sessions/                session manifest, on-disk store, session lifecycle + crash recovery
-  pipeline/                job runner (transcribe → summarize), steps, resume/retry
+  pipeline/                job runner (mix, transcribe → summarize), steps, resume/retry, session lock
   stt/                     speech-to-text interface + adapters (mock, OpenAI-compatible)
   summarize/               LLM interface + adapters, prompt, summary schema, map-reduce
   transcript/              speech detection/chunking (ffmpeg), merging and rendering transcripts
