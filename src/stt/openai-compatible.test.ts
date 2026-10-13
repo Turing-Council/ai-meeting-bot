@@ -109,4 +109,12 @@ describe('toSegments', () => {
     expect(toSegments({ text: '  ' }, 5000)).toEqual([]);
     expect(toSegments({ text: 'Hi' }, 5000)).toEqual([{ startMs: 0, endMs: 5000, text: 'Hi' }]);
   });
+
+  it('drops lines models invent from noise in every format, but keeps ambiguous real speech', () => {
+    expect(toSegments({ text: 'Thanks for watching!' }, 5000)).toEqual([]);
+    expect(toSegments({ text: ' Subtitles by the Amara.org community' }, 5000)).toEqual([]);
+    expect(toSegments({ text: 'Please subscribe.' }, 5000)).toEqual([]);
+    expect(toSegments({ text: 'Thank you.' }, 5000)).toHaveLength(1);
+    expect(toSegments({ text: 'We should subscribe to that newsletter.' }, 5000)).toHaveLength(1);
+  });
 });

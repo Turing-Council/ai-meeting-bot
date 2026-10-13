@@ -73,15 +73,36 @@ export function toSegments(response: z.infer<typeof TranscriptionResponse>, dura
 
   if (!response.segments) {
     const text = response.text.trim();
-    return text ? [{ startMs: 0, endMs: durationMs, text }] : [];
+    return text && !isKnownHallucination(text) ? [{ startMs: 0, endMs: durationMs, text }] : [];
   }
   return response.segments
-    .filter((s) => !isLikelyHallucination(s))
+    .filter((s) => !isLowConfidence(s) && !isKnownHallucination(s.text))
     .map((s) => ({ startMs: clamp(s.start * 1000), endMs: clamp(s.end * 1000), text: s.text.trim() }))
     .filter((s) => s.text.length > 0);
 }
 
-/** Whisper's own heuristic: probably no speech and low confidence → made-up text ("Thank you."). */
-function isLikelyHallucination(segment: { no_speech_prob?: number | undefined; avg_logprob?: number | undefined }): boolean {
+/**
+ * Whisper's own heuristic: probably no speech and low confidence → made-up text ("Thank you.").
+ * Needs the per-segment scores of `verbose_json`.
+ */
+function isLowConfidence(segment: { no_speech_prob?: number | undefined; avg_logprob?: number | undefined }): boolean {
   return (segment.no_speech_prob ?? 0) > 0.6 && (segment.avg_logprob ?? 0) < -1;
+}
+
+/**
+ * Lines Whisper-style models invent from noise (learned from video subtitles), which nobody
+ * says in a meeting. Works in every response format. Ambiguous ones like "Thank you." are left
+ * to isLowConfidence, since people do say them.
+ */
+const KNOWN_HALLUCINATIONS = [
+  /^(thanks|thank you)( (so|very) much)? for watching\b/,
+  /^(please )?(like and )?subscribe\b/,
+  /\bsubscribe to (my|our|the) channel\b/,
+  /^(subtitles|captions|transcription|transcribed) by\b/,
+  /\bamara\.org\b/,
+];
+
+export function isKnownHallucination(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/[^a-z0-9.' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return KNOWN_HALLUCINATIONS.some((pattern) => pattern.test(normalized));
 }
