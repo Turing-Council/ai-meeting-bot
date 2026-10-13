@@ -11,13 +11,14 @@ import { describeSetupError, setupNotion } from '../notion/setup.js';
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env, { requireDiscord: false });
-  const notion = createNotion(config);
+  const logger = createLogger(config.logLevel);
+  const notion = createNotion(config, logger);
   if (!notion) throw new Error('Set NOTION_TOKEN first.');
   const parentId = parseNotionId(process.argv[2] ?? '');
   if (!parentId) throw new Error('Usage: npm run notion:setup -- <link to the parent Notion page>');
 
   try {
-    const { setup, created } = await setupNotion(notion.api, notion.settings, parentId, createLogger(config.logLevel));
+    const { setup, created } = await setupNotion(notion.api, notion.settings, parentId, logger);
     console.log(created ? 'Notion is set up.' : 'Notion was already set up; nothing changed.');
     console.log(`Meetings:     ${setup.meetings.url}\nAction Items: ${setup.actionItems.url}\nSaved to:     ${notion.settings.file}`);
   } catch (error) {

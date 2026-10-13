@@ -92,6 +92,17 @@ export const SessionManifest = z.object({
   processing: z
     .object({ mix: StepState.optional(), transcribe: StepState.optional(), summarize: StepState.optional() })
     .optional(),
+  /** The meeting's Notion page and the content the bot wrote there (to replace it on a re-run). */
+  notion: z
+    .object({
+      pageId: z.string(),
+      pageUrl: z.string(),
+      /** Top-level blocks the bot appended to the page body. */
+      bodyBlockIds: z.array(z.string()),
+      /** Rows the bot created in Action Items. */
+      actionItemIds: z.array(z.string()),
+    })
+    .optional(),
   /** Outputs of the processing steps, relative to the session directory. */
   transcriptFile: z.string().optional(),
   transcriptDataFile: z.string().optional(),

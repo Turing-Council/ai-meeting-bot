@@ -133,6 +133,15 @@ describe('buildPanel', () => {
     expect(buttonIds(session)).toEqual([panelCustomId('retry', base.id)]);
   });
 
+  it('links to the Notion page while recording and afterwards', () => {
+    const notion = { pageId: 'p', pageUrl: 'https://notion.test/p', bodyBlockIds: [], actionItemIds: [] };
+    const urls = (session: SessionManifest) =>
+      buildPanel(session).components.flatMap((row) => row.components.map((b) => (b.toJSON() as { url?: string }).url).filter(Boolean));
+    expect(urls({ ...base, notion })).toEqual(['https://notion.test/p']);
+    expect(urls({ ...recorded, notion })).toEqual(['https://notion.test/p']);
+    expect(urls(recorded)).toEqual([]);
+  });
+
   it('shows the TL;DR, decisions and action items', () => {
     const embed = buildPanel(
       { ...recorded, processing: { transcribe: { status: 'done', attempts: 1 }, summarize: { status: 'done', attempts: 1 } } },

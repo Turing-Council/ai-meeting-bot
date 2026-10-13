@@ -116,6 +116,9 @@ function formatActionItem(item: ActionItem): string {
 }
 
 function buildButtons(session: SessionManifest): ActionRowBuilder<ButtonBuilder>[] {
+  const notionLink = session.notion?.pageUrl
+    ? [new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(session.notion.pageUrl).setLabel('Open in Notion')]
+    : [];
   const processingFailed = Object.values(session.processing ?? {}).some((state) => state.status === 'failed');
   if (processingFailed) {
     return [
@@ -125,10 +128,13 @@ function buildButtons(session: SessionManifest): ActionRowBuilder<ButtonBuilder>
           .setLabel('Retry processing')
           .setEmoji('🔁')
           .setStyle(ButtonStyle.Secondary),
+        ...notionLink,
       ),
     ];
   }
-  if (session.status !== 'recording' && session.status !== 'paused') return [];
+  if (session.status !== 'recording' && session.status !== 'paused') {
+    return notionLink.length > 0 ? [new ActionRowBuilder<ButtonBuilder>().addComponents(...notionLink)] : [];
+  }
 
   const pauseButton =
     session.status === 'paused'
@@ -156,6 +162,7 @@ function buildButtons(session: SessionManifest): ActionRowBuilder<ButtonBuilder>
         .setLabel('Stop')
         .setEmoji('⏹️')
         .setStyle(ButtonStyle.Danger),
+      ...notionLink,
     ),
   ];
 }

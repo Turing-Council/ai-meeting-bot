@@ -28,13 +28,20 @@ async function main(): Promise<void> {
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
   const store = new SessionStore(sessionsDir, logger);
   const panel = new PanelUpdater(client, logger);
-  const notion = createNotion(config);
+  const notion = createNotion(config, logger);
   if (notion && !(await notion.settings.get())) {
     logger.warn('NOTION_TOKEN is set but Notion is not set up yet: run /meeting setup in Discord');
   }
 
-  // Mix, transcribe → summarize after each recording; progress and results show on the panel.
-  const pipeline = createPipeline(config, store, logger, { onUpdate: panelProcessingListener(store, panel) });
+  // Mix, transcribe → summarize after each recording; progress and results show on the panel
+  // and, with Notion on, in the meeting page's Status.
+  const showOnPanel = panelProcessingListener(store, panel);
+  const showInNotion = notion?.publisher.statusListener();
+  const pipeline = createPipeline(config, store, logger, {
+    onUpdate: async (manifest, finished) => {
+      await Promise.all([showOnPanel(manifest, finished), showInNotion?.(manifest, finished)]);
+    },
+  });
   logger.info('Processing', { steps: pipeline.stepNames, stt: config.stt.provider, llm: config.llm.provider });
 
   const manager = new SessionManager({
@@ -43,6 +50,7 @@ async function main(): Promise<void> {
     config,
     logger,
     panel,
+    onStarted: (manifest) => void notion?.publisher.startMeeting(manifest, (page) => manager.attachNotionPage(manifest.id, page)),
     onRecorded: (manifest) => void pipeline.enqueue(manifest.id),
   });
 

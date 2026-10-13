@@ -53,6 +53,8 @@ export interface SessionManagerDeps {
   config: Config;
   logger: Logger;
   panel?: PanelUpdater;
+  /** Called once a recording has started (e.g. to create its Notion page). */
+  onStarted?: (manifest: SessionManifest) => void;
   /** Called when a session's audio is saved and ready for processing (after a stop or a recovery). */
   onRecorded?: (manifest: SessionManifest) => void;
   now?: () => number;
@@ -71,6 +73,7 @@ export class SessionManager {
   private readonly config: Config;
   private readonly logger: Logger;
   private readonly panel: PanelUpdater;
+  private readonly onStarted: ((manifest: SessionManifest) => void) | undefined;
   private readonly onRecorded: ((manifest: SessionManifest) => void) | undefined;
   private readonly now: () => number;
 
@@ -84,6 +87,7 @@ export class SessionManager {
     this.config = deps.config;
     this.logger = deps.logger;
     this.panel = deps.panel ?? new PanelUpdater(deps.client, deps.logger);
+    this.onStarted = deps.onStarted;
     this.onRecorded = deps.onRecorded;
     this.now = deps.now ?? Date.now;
   }
@@ -197,6 +201,7 @@ export class SessionManager {
     this.updateEmptyTimer(session);
 
     log.info('Recording started', { channel: voiceChannel.name, trigger: options.trigger });
+    this.notify(this.onStarted, manifest);
     return manifest;
   }
 
@@ -236,6 +241,19 @@ export class SessionManager {
     if (!session) throw new UserError("I'm not recording anything in this server.");
     session.stopping ??= this.finalize(session, reason);
     return session.stopping;
+  }
+
+  /**
+   * Stores the session's Notion page while it is recording. Returns false if the session has
+   * already ended (the caller then discards the page).
+   */
+  async attachNotionPage(sessionId: string, page: { id: string; url: string }): Promise<boolean> {
+    const session = this.findBySessionId(sessionId);
+    if (!session || session.stopping) return false;
+    session.manifest.notion = { pageId: page.id, pageUrl: page.url, bodyBlockIds: [], actionItemIds: [] };
+    await this.persist(session);
+    await this.refreshPanel(session.manifest);
+    return true;
   }
 
   /** Re-renders the panel message right away (after pause/resume the button handler does this itself). */
@@ -390,10 +408,14 @@ export class SessionManager {
 
   private notifyRecorded(manifest: SessionManifest): void {
     if (manifest.status !== 'recorded' || manifest.tracks.length === 0) return;
+    this.notify(this.onRecorded, manifest);
+  }
+
+  private notify(listener: ((manifest: SessionManifest) => void) | undefined, manifest: SessionManifest): void {
     try {
-      this.onRecorded?.(structuredClone(manifest));
+      listener?.(structuredClone(manifest));
     } catch (error) {
-      this.logger.error('onRecorded listener failed', { sessionId: manifest.id, error });
+      this.logger.error('Session listener failed', { sessionId: manifest.id, error });
     }
   }
 
