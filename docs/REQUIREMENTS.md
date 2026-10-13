@@ -28,7 +28,7 @@ closed, private use, so compliance is out of scope.
 - **R0.2 Record each speaker.** One Opus stream per Discord user, so each speaker is already
   separated without extra processing. The bot also builds a mixed track for playback. Audio is
   written to disk in chunks as it arrives, so a crash loses at most one chunk.
-- **R0.3 Session state.** At most one active session per voice channel. Recording status is
+- **R0.3 Session state.** At most one active session per server (a bot can be in one voice channel per server). Recording status is
   visible in two places: the bot's nickname gets a 🔴 prefix, and a control panel message is
   posted in the voice channel's text chat.
 - **R0.4 Persist.** On stop, the bot encodes the audio to OGG/Opus (or MP3) and stores it on the
@@ -122,7 +122,8 @@ closed, private use, so compliance is out of scope.
   over multiple blocks, plus an attached `.txt`/`.md` file.
 
 ## Assumed defaults (override if wrong)
-- A single Discord server, possibly with multiple voice channels recording at the same time.
+- A single Discord server. **One recording at a time per server**: Discord lets a bot be in only one
+  voice channel per server (recording two channels at once would need a second bot account).
 - Summary output is in English.
 - Raw audio is kept on the VPS for 30 days after a successful Notion upload, then deleted.
 
