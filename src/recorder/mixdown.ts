@@ -19,18 +19,20 @@ export function buildMixdownArgs(inputs: readonly string[], output: string, bitr
   return args;
 }
 
-/** Runs ffmpeg and rejects with the tail of its stderr if it fails. */
-export function runFfmpeg(ffmpegPath: string, args: readonly string[]): Promise<void> {
+/**
+ * Runs ffmpeg and resolves with its full stderr (where filters like silencedetect report).
+ * Rejects with the tail of stderr if it fails.
+ */
+export function runFfmpeg(ffmpegPath: string, args: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString()).slice(-4000);
-    });
+    const chunks: Buffer[] = [];
+    child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.once('error', (error) => reject(new Error(`Could not start ffmpeg (${ffmpegPath}): ${error.message}`)));
     child.once('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited with code ${code}: ${stderr.trim()}`));
+      const stderr = Buffer.concat(chunks).toString();
+      if (code === 0) resolve(stderr);
+      else reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-4000).trim()}`));
     });
   });
 }
