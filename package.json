@@ -15,7 +15,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "register": "tsx --env-file-if-exists=.env src/scripts/register-commands.ts",
-    "register:prod": "node dist/scripts/register-commands.js"
+    "register:prod": "node dist/scripts/register-commands.js",
+    "process": "tsx --env-file-if-exists=.env src/scripts/process-session.ts",
+    "process:prod": "node dist/scripts/process-session.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
