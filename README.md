@@ -1,12 +1,12 @@
 # Turing Voice Bot
 
 A Discord bot that joins a voice channel, records the meeting (one track per speaker plus a mix),
-transcribes and summarizes it, and, in a later milestone, logs it to Notion.
+transcribes and summarizes it, and logs it to Notion as a structured meeting page.
 
 **Set it up → [`docs/usage.md`](docs/usage.md)** (quick setup, commands, configuration, providers, troubleshooting)
 
 Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Developer notes: [`docs/developing.md`](docs/developing.md) ·
-Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize**
+Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize, M3 Notion**
 
 ## What works now
 
@@ -25,6 +25,10 @@ Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize**
   `transcript.md` attached. If a step fails, a **Retry processing** button appears.
 - **Any AI provider:** speech-to-text and the LLM are configured separately, against any server
   that speaks the common OpenAI-compatible API, hosted or self-hosted.
+- **Notion:** `/meeting setup` creates a Meetings and an Action Items database. Each meeting
+  gets a page as soon as recording starts. After processing, the page gets the summary,
+  decisions, action items (also as linked rows), bookmarks, chat materials, the recording and
+  the full transcript.
 
 > **One recording per server.** Discord lets a bot be in only one voice channel per server.
 
@@ -61,6 +65,8 @@ Once a session is `recorded`, a job runs these steps, one session at a time:
    returns JSON: TL;DR, key points, decisions, action items (task, owner, due date) and open
    questions. The JSON is validated; long meetings are summarized in parts and then combined.
    Result: `summary.json`.
+4. **Publish** to Notion (when `NOTION_TOKEN` is set) runs last: it fills in the meeting's
+   page. See [`docs/usage.md`](docs/usage.md#notion).
 
 Each step's state is kept in `manifest.json`. A failed step waits for **Retry processing** and
 blocks only the steps that need its output: a failed mix doesn't stop the transcript. A job cut
@@ -121,6 +127,11 @@ Voice can't be fully unit-tested. Before relying on it, check on a test server w
 - [ ] With real providers: names and timestamps in `transcript.md` match who said what; the summary's action items make sense
 - [ ] Wrong API key → the panel shows ⚠️ with the error and a **Retry processing** button; fix the key, redeploy, press Retry → it finishes
 - [ ] Redeploy while "Transcribing" → after restart it resumes and finishes without re-sending chunks already done
+- [ ] `/meeting setup parent:<sandbox page>` creates Meetings and Action Items with the right properties; running it again changes nothing
+- [ ] `/meeting start` → the Notion page appears with Status `Recording`, and the panel shows **Open in Notion**
+- [ ] With `COLLECT_CHAT_MATERIALS=true`: a file and a link posted in the voice channel's chat appear under Materials; a deleted message's file doesn't
+- [ ] After stop: Status `Processing` → `Done`; the page has the recording player, the transcript file and toggle, the summary sections and the bookmarks; the action items are rows linked to the meeting
+- [ ] Wrong `NOTION_TOKEN` → Status unchanged in Notion, ⚠️ on the panel; fix the token, redeploy, Retry → `Done`, with no duplicated content and notes typed on the page still there
 
 ## Project layout
 
@@ -132,14 +143,14 @@ src/
   recorder/                Opus/Ogg writer, time-aligned tracks, receiver → files, ffmpeg mixdown
   sessions/                session manifest, on-disk store, session lifecycle + crash recovery
   pipeline/                job runner (mix, transcribe → summarize), steps, resume/retry, session lock
+  notion/                  Notion API client, database setup, page/property builders, publisher
   stt/                     speech-to-text interface + adapters (mock, OpenAI-compatible)
   summarize/               LLM interface + adapters, prompt, summary schema, map-reduce
   transcript/              speech detection/chunking (ffmpeg), merging and rendering transcripts
   http.ts                  HTTP client for providers: timeouts, retries, Retry-After
-  scripts/                 register-commands.ts, process-session.ts
+  scripts/                 register-commands.ts, process-session.ts, notion-setup.ts
 ```
 
 ## Next milestones
 
-- **M3 Notion:** Meetings and Action Items databases, meeting page, chat materials
 - **M4 Polish:** auto-record, cleanup of old audio

@@ -38,7 +38,20 @@ You need: a Discord server where you can manage the server, and a VPS with
 7. **Optional: transcripts and summaries.** To try the whole flow for free, add
    `STT_PROVIDER=mock` and `LLM_PROVIDER=mock` (placeholder text, no API calls), then redeploy.
    For real results, see [Choosing providers](#choosing-providers).
-8. **Optional: Notion.** Not available yet (milestone M3, in progress).
+8. **Optional: Notion.**
+   1. Create an integration at <https://www.notion.so/profile/integrations> → *New
+      integration* → type *Internal*, in your workspace. Under *Capabilities*, keep *Read
+      content*, *Update content* and *Insert content*. Copy the *Internal Integration Secret*.
+   2. In Notion, open (or create) the page that should hold the meeting databases, e.g.
+      "Meetings". Click **••• → Connections →** add your integration.
+   3. Add `NOTION_TOKEN=<secret>` to the environment and redeploy. Run the register command
+      from step 4 again: it adds `/meeting setup`.
+   4. In Discord, run `/meeting setup parent:<link to that page>` (needs *Manage Server*).
+      The bot creates a **Meetings** and an **Action Items** database there. From then on,
+      every meeting gets its own page.
+   5. Optional, to also save files and links posted in the voice channel's chat: in the
+      Discord developer portal, *Bot* tab → turn on **Message Content Intent**, then set
+      `COLLECT_CHAT_MATERIALS=true` and redeploy.
 
 Running it on your own machine instead (needs Node.js ≥ 22.12 and `ffmpeg`):
 
@@ -59,6 +72,7 @@ npm run dev
 | `/meeting note <text>` | Adds a timestamped bookmark. Bookmarks are shown in the transcript and given to the summarizer as important moments |
 | `/meeting stop` | Stops recording, leaves the channel and starts processing |
 | `/meeting status` | Shows the current recording, or the last meeting with its processing state and summary (only you see the reply) |
+| `/meeting setup parent:<link>` | Creates the Notion databases under that page. Needs *Manage Server*. Running it again changes nothing while the databases exist |
 
 When a recording starts, the bot posts a **control panel** in the voice channel's text chat (or
 in the channel where you ran the command, if it can't post there). It shows the timer,
@@ -68,6 +82,7 @@ participants and bookmarks, with these buttons:
 - **📝 Bookmark:** same as `/meeting note`, through a small form.
 - **⏹ Stop:** same as `/meeting stop`.
 - **🔁 Retry processing:** appears after the meeting if a processing step failed.
+- **Open in Notion:** a link to the meeting's Notion page, once it exists.
 
 While recording, the bot's nickname starts with 🔴. If everyone leaves the voice channel, the
 bot stops after 2 minutes (`EMPTY_CHANNEL_TIMEOUT_MIN`).
@@ -90,6 +105,8 @@ each step's progress (🕓 waiting · ⏳ running · ✅ done · ⚠️ failed):
    are sent to the provider.
 3. **Summary** (also needs an LLM): TL;DR, key points, decisions, action items (with owner and
    due date when mentioned) and open questions.
+4. **Notion** (needs `NOTION_TOKEN` and `/meeting setup`): fills in the meeting's Notion page.
+   Runs after the other steps.
 
 When it's done, the panel shows the TL;DR, decisions, action items and open questions, with
 `transcript.md` attached.
@@ -146,6 +163,13 @@ Set these as environment variables (Dokploy *Environment*, or `.env` locally; se
 | `LLM_TEMPERATURE` | | model default | Leave empty unless you need it; some models accept only their default |
 | `LLM_CHUNK_CHARS` | | `48000` | Transcript size per call; longer meetings are summarized in parts. Lower it for models with a small context window |
 
+**Notion**
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `NOTION_TOKEN` | for Notion | | Internal integration secret. Without it, nothing goes to Notion |
+| `COLLECT_CHAT_MATERIALS` | | `false` | `true` saves files and links posted in the voice channel's chat. Turn on *Message Content Intent* in the Discord developer portal **first**, or the bot can't log in |
+
 ## Choosing providers
 
 Both settings work with any service that offers an **OpenAI-compatible API**. Most hosted AI
@@ -192,9 +216,57 @@ Tips:
 
 ## Notion
 
-Not available yet. Milestone M3 adds it: a Meetings and an Action Items database, a page per
-meeting with the summary, transcript, recording and chat materials, and an *Open in Notion*
-button on the panel.
+`/meeting setup` creates two databases under the page you choose. Their location is saved in
+`notion.json` on the data volume. Don't rename the properties the bot fills in; you can add
+your own properties and views freely.
+
+**Meetings**, one page per meeting:
+
+| Property | Content |
+|---|---|
+| Title | The meeting title |
+| Date | Start to end |
+| Duration (min) | Length of the recording |
+| Channel | Voice channel |
+| Participants | Everyone who was in the channel (Discord display names) |
+| Type | The `type` given to `/meeting start` |
+| Status | `Recording` → `Processing` → `Done`, or `Failed` |
+| Trigger | `Manual` (auto-record comes later) |
+| Recording | `recording.ogg`, the mixed audio |
+| Transcript | `transcript.md` |
+| Action items | Links to the meeting's rows in Action Items |
+
+**Action Items**: Task, Owner (name as said in the meeting), Due (when a date was mentioned),
+Status (`To do` / `Doing` / `Done`) and Meeting (link back).
+
+**How a meeting page fills in:**
+1. `/meeting start` creates the page right away with Status `Recording`, and the panel gets an
+   **Open in Notion** button. People can take notes on the page during the meeting.
+2. After `/meeting stop`, Status becomes `Processing`. When processing is done, the bot adds:
+   - **Summary** (TL;DR and key points)
+   - **Decisions**
+   - **Action items** (also created as rows in Action Items)
+   - **Open questions**
+   - **Bookmarks**
+   - **Materials**
+   - **Recording** (an audio player)
+   - **Full transcript** (collapsed)
+
+   Status then becomes `Done`.
+3. If something fails, Status becomes `Failed` and the panel offers **Retry processing**. A retry
+   replaces only the content the bot wrote, so your notes on the page stay. Action items that
+   already exist are not created again.
+
+**Materials** (with `COLLECT_CHAT_MATERIALS=true`): files and links posted in the voice
+channel's own text chat while recording. Files are copied right away (Discord's file links
+expire after about a day) and uploaded to the Notion page; links become bookmarks. Deleting the
+message during the meeting removes it from the materials. Files over 100 MB are only linked.
+
+Without summaries or transcripts (providers off), the page still gets the recording, the
+bookmarks and the materials.
+
+Reprocessing with `--force` (see [Files and data](#files-and-data)) reuses the same Notion page:
+the bot's content is rewritten, and its action items are moved to the trash and created again.
 
 ## Files and data
 
@@ -208,7 +280,9 @@ sessions/<YYYYMMDD-HHMMSS-xxxx>/
   transcript.md      # readable transcript
   transcript.json    # the same, for programs
   summary.json       # the structured summary
+  materials/         # files posted in the chat during the meeting
   work/              # caches used by retries; safe to delete once processing is done
+notion.json          # where the Notion databases are (written by /meeting setup)
 ```
 
 **Back up** the whole volume to keep recordings. The folder names start with the date and time
@@ -244,3 +318,10 @@ Logs are in Dokploy (*Logs* tab), one JSON line per event. Set `LOG_LEVEL=debug`
 | The panel stopped updating | The panel message may have been deleted. `/meeting status` still shows the meeting |
 | `transcript.md` isn't attached to the panel | The bot lacks *Attach Files*: re-invite it with the link from the register command, or add the permission to its role |
 | Recordings disappeared after a redeploy | No volume on `/app/data` (Quick setup, step 3) |
+| The bot doesn't start: "Discord refused the Message Content intent" | `COLLECT_CHAT_MATERIALS=true` without the intent: turn on *Message Content Intent* in the developer portal (*Bot* tab), or set the variable to `false` |
+| `/meeting setup`: "Notion can't find that page" | The page isn't shared with the integration: open it → ••• → *Connections* → add it |
+| `/meeting setup` isn't listed | Run the register command again after updating the bot |
+| ⚠️ on Notion: "Notion is not set up yet" | Run `/meeting setup`, then press Retry |
+| ⚠️ on Notion with `401` | Wrong `NOTION_TOKEN` |
+| ⚠️ on Notion: "Could not find …" | The databases were deleted or unshared: share them again, or run `/meeting setup` to create new ones |
+| No *Open in Notion* button during the meeting | Creating the page failed (see the logs); processing creates it after the meeting |

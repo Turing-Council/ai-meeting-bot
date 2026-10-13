@@ -14,13 +14,13 @@ Milestones follow the plan in `REQUIREMENTS.md`. They're tracked as tasks on the
 | M0 | Setup | Repo, Docker, Dokploy, bot token | 🟡 Code done (2026-10-13). Waiting on Discord app/token and first Dokploy deploy |
 | M1 | Record | Join, record, save audio | 🟡 Code done (2026-10-13). Waiting on a manual test on a real server |
 | M2 | Transcribe & Summarize | STT + LLM, job pipeline | 🟡 Code done (2026-10-13). Waiting on choosing providers and a test with real meetings |
-| M3 | Notion | Databases, meeting page, action items | ⚪ Not started |
+| M3 | Notion | Databases, meeting page, action items | 🟡 Code done (2026-10-13). Waiting on a Notion integration and a test on a sandbox page |
 | M4 | Polish | Auto-record, permissions, cleanup | ⚪ Not started (permissions already done in M1) |
 
 A milestone counts as **done** only after it works against a real Discord server, not just in
 tests.
 
-## Current scope (M0–M2)
+## Current scope (M0–M3)
 
 **In:**
 - Slash commands `/meeting start [title] [type]`, `stop`, `note <text>`, `status` (current
@@ -42,11 +42,15 @@ tests.
   and the script from processing the same session at once
 - `process-session` script to (re)process a session by hand
 - CI on GitHub Actions: type check + all tests, including the ffmpeg ones
+- Notion: `/meeting setup` (or `npm run notion:setup`) creates the Meetings and Action Items
+  databases. A page is created at `/meeting start` (`Recording`), its Status follows processing,
+  and a `publish` step fills it in. Action items become linked rows. **Open in Notion** on the panel
+- Chat materials (`COLLECT_CHAT_MATERIALS=true`): files and links from the voice channel's chat,
+  downloaded during the meeting and published under Materials
 
 **Out (later milestones):**
-- Anything in Notion (M3), including uploading audio/transcript and the "Notion link" on the panel
-- Collecting files/links from chat (M3)
 - Auto-record on channel join (M4)
+- Mapping Discord users to Notion people (later; plain names for now)
 - Deleting old audio (M4)
 
 **Constraints found while building:**
@@ -67,6 +71,7 @@ tests.
 | Storage | Files on disk: one directory per session with a JSON manifest (no database yet) |
 | Tests | `vitest` |
 | AI providers | OpenAI-compatible HTTP APIs via `fetch` (no vendor SDKs): `/audio/transcriptions`, `/chat/completions` |
+| Notion | Official `@notionhq/client`, pinned to `Notion-Version: 2025-09-03` (data sources, file uploads); the SDK retries 429/5xx |
 | Deploy | Dockerfile → Dokploy, persistent volume at `/app/data` |
 
 No Opus encoder/decoder library is installed (`@discordjs/opus`, `opusscript`): the bot never
@@ -81,11 +86,15 @@ SessionManager ── start/pause/stop ────────────┘  
      ├── manifest.json (SessionStore, atomic writes)
      ├── control panel (PanelUpdater)
      ├── crash recovery on boot
+     ├── chat materials (MessageCreate/Delete → materials/, manifest.materials)
+     ├── onStarted ──▶ NotionPublisher.startMeeting → page (Recording) → manifest.notion
      └── onRecorded ──▶ Pipeline (one job at a time, state in manifest.processing, processing.lock)
                           1. mix:        ffmpeg amix → mixed.ogg
                           2. transcribe: silencedetect → speech chunks → SttProvider → merge → transcript.json/.md
                           3. summarize:  transcript + bookmarks → Summarizer (map-reduce) → ChatModel → summary.json
+                          4. publish:    uploads + properties + body blocks + action items → Notion (Done)
                           └── progress/results ──▶ PanelUpdater (TL;DR, action items, transcript.md attached)
+                                               └─▶ NotionPublisher.statusListener (Processing / Failed)
 ```
 
 ### Modules
@@ -111,9 +120,16 @@ SessionManager ── start/pause/stop ────────────┘  
 | `src/stt/` | `SttProvider` interface, `mock` and `openai-compatible` adapters |
 | `src/summarize/` | `ChatModel` interface and adapters, `Summary` schema, prompt, map-reduce, JSON repair |
 | `src/http.ts` | Provider HTTP calls: timeout, retries on network/408/429/5xx, `Retry-After` |
+| `src/notion/api.ts` | `NotionApi` interface + SDK implementation: databases, pages, blocks, single/multi-part uploads |
+| `src/notion/schema.ts` · `setup.ts` · `settings.ts` | Database schemas, idempotent setup, `notion.json` |
+| `src/notion/properties.ts` · `blocks.ts` · `rich-text.ts` | Pure builders: page/action-item properties, the page body, Notion's text limits |
+| `src/notion/publisher.ts` | Page at start, status sync, final properties |
+| `src/pipeline/publish-step.ts` | The `publish` step: uploads, body, action items, with checkpoints |
+| `src/sessions/materials.ts` | Links and attachments from chat messages; size-capped downloads |
 | `src/scripts/register-commands.ts` | Registers slash commands and prints the invite link |
 | `src/scripts/process-session.ts` | Runs the pipeline on one session without Discord (`--list`, `--force`) |
-| `src/test-utils/` | Independent Ogg parser and a fake HTTP server, used by the tests (not built into `dist`) |
+| `src/scripts/notion-setup.ts` | Same as `/meeting setup`, from the command line |
+| `src/test-utils/` | Independent Ogg parser, a fake HTTP server and an in-memory fake Notion, used by the tests (not built into `dist`) |
 
 ### Key design decisions
 
@@ -154,6 +170,26 @@ SessionManager ── start/pause/stop ────────────┘  
 - **Session lock.** Processing holds `processing.lock` in the session directory. The holder
   touches it every 30 s; a lock untouched for 2 min was left by a dead process and is taken
   over. The bot skips a locked session (and logs who holds it); the script stops with a message.
+- **Notion setup lives on the volume.** `/meeting setup` writes `$DATA_DIR/notion.json` (database
+  and data source IDs, and whether Status is a real Status or a Select fallback). No extra env
+  vars, no redeploy. Setup is idempotent while the saved data sources are reachable.
+- **The page exists from the start.** It's created in the background at `/meeting start` and
+  never blocks recording. If that fails, or the meeting ends first (the page is then trashed),
+  the publish step creates it. The Status mirror (`Processing`/`Failed`) is a pipeline listener;
+  `Done` is written only by the publish step, and the listener never overrides it.
+- **Re-runnable publishing that keeps people's notes.** The bot records the IDs of the top-level
+  blocks it appends (`manifest.notion.bodyBlockIds`) and deletes only those before rewriting.
+  Action items are created once, in order (`actionItemIds`); a run cut short continues from the
+  next one. `checkpoint()` saves these IDs as soon as they exist in Notion, so a crash can't
+  duplicate them. Uploads are redone each run because they expire after an hour unattached.
+- **Notion limits handled in the builders:** 2000 characters per rich-text item, 100 blocks per
+  append, two levels of nesting. The transcript toggle is appended first, and its paragraphs are
+  appended to it in batches of 100.
+- **Chat materials are copied immediately.** Discord attachment URLs expire, so files (≤ 100 MB)
+  are downloaded to `materials/` when posted. The session waits for pending downloads before it
+  ends. Collecting needs the privileged Message Content intent, so it's opt-in
+  (`COLLECT_CHAT_MATERIALS`): requesting it without enabling it in the portal makes Discord
+  refuse the login. The bot then says so.
 - **Pipeline state in the manifest, not SQLite.** The spec suggested SQLite for job state; per-step
   state in `manifest.json` (`processing.mix/transcribe/summarize`: status, attempts, error) turned out
   to be enough for one server and keeps a session self-contained in its directory. Revisit if
@@ -174,6 +210,7 @@ SessionManager ── start/pause/stop ────────────┘  
 $DATA_DIR/sessions/<YYYYMMDD-HHMMSS-xxxx>/
   manifest.json
   processing.lock           # only while being processed
+  materials/<messageId>-<n>-<name>           # files posted in the chat during the meeting
   tracks/<discordUserId>.ogg
   mixed.ogg
   transcript.json           # { version, sessionId, turns: [{ speakerId, speaker, startMs, endMs, text }] }
@@ -181,6 +218,7 @@ $DATA_DIR/sessions/<YYYYMMDD-HHMMSS-xxxx>/
   summary.json              # { tldr, keyPoints, decisions, actionItems: [{ task, owner, due }], openQuestions }
   work/stt/<userId>-<startMs>-<endMs>.json   # cached STT result per chunk
   work/llm/<label>-<hash>.json               # cached LLM result per call
+$DATA_DIR/notion.json        # Notion database/data source IDs (from /meeting setup)
 ```
 
 `manifest.json` holds:
@@ -189,6 +227,8 @@ $DATA_DIR/sessions/<YYYYMMDD-HHMMSS-xxxx>/
 - `participants` (everyone present) and `tracks` (only people who spoke)
 - `pauses` and `bookmarks`, as ms offsets from the start
 - the panel message location
+- `materials`: files and links from the chat
+- `notion`: page ID/URL, and the IDs of the body blocks and action items the bot created
 - `processing`: state of each configured step, plus the output file names
 
 Paths inside the manifest are relative to the session directory.
@@ -236,7 +276,13 @@ approved in `package.json` under `allowScripts`. If an update to it fails, run
 - CI (`.github/workflows/ci.yml`): one job on pushes to `main` and on PRs, only when code or its
   config changes. It caches `node_modules` (keyed on the lockfile) and a static ffmpeg build,
   fails if ffmpeg lacks libopus instead of silently skipping tests, and cancels superseded runs.
-- Live Discord behavior and real providers are covered by the manual checklist in the README.
+- Notion is tested against `FakeNotionApi` (`src/test-utils/fake-notion.ts`), an in-memory
+  Notion that enforces the append and nesting limits and can fail a chosen call. The publish
+  tests cover the first run, a retry after a failure part-way (no duplicates, human notes kept),
+  starting over, and missing setup. Setup tests cover creation, idempotency and the Select
+  fallback.
+- Live Discord behavior, real providers and real Notion are covered by the manual checklist in
+  the README.
 
 ## Open points for M2
 
@@ -246,14 +292,18 @@ approved in `package.json` under `allowScripts`. If an update to it fails, run
 - **Tune on real meetings:** silence threshold (`-40dB`), chunk grouping (10 s) and the summary
   prompt were chosen from first principles and only tested on synthetic audio.
 
-## Next up (M3)
+## Open points for M3
 
-1. Notion client + `setup` script: create the Meetings and Action Items databases under a parent
-   page, store their IDs.
-2. Meeting page created at `/meeting start` (status `Recording`), completed after processing:
-   properties, body template (summary, decisions, action items, open questions, bookmarks,
-   materials, transcript in a toggle).
-3. A `publish` pipeline step: upload `mixed.ogg` and `transcript.md` (File Upload API), create
-   Action Items with a relation to the meeting. Same resume/retry rules as the other steps.
-4. Collect attachments and links posted in the voice channel's chat during the session.
-5. Notion link on the control panel.
+- **Verify against real Notion** (README checklist), in particular:
+  - creating a `status` property through the API (otherwise the Select fallback is used)
+  - multi-part upload of a long recording
+  - the 3 requests/second rate limit on a long transcript
+- If the page is deleted in Notion while a meeting is processed, publishing fails; it doesn't
+  recreate the page.
+
+## Next up (M4)
+
+1. Auto-record: whitelisted channels, start at N humans, auto title, discard sessions under M
+   minutes.
+2. Cleanup: delete local audio N days after a successful publish.
+3. Decide whether `/meeting setup` should use its own role instead of Manage Server.
