@@ -31,6 +31,22 @@ const StepState = z.object({
 });
 export type StepState = z.infer<typeof StepState>;
 
+/** A file or link posted in the voice channel's chat during the session. */
+export const Material = z.object({
+  kind: z.enum(['file', 'link']),
+  /** File name, or the link itself. */
+  name: z.string(),
+  /** Downloaded copy, relative to the session directory (files only). */
+  file: z.string().optional(),
+  url: z.string().optional(),
+  contentType: z.string().optional(),
+  size: z.number().optional(),
+  by: Person,
+  atMs: z.number(),
+  messageId: z.string(),
+});
+export type Material = z.infer<typeof Material>;
+
 export const SessionManifest = z.object({
   version: z.literal(1),
   id: z.string(),
@@ -61,6 +77,8 @@ export const SessionManifest = z.object({
   /** Pause intervals, in ms from start. `endMs` is missing while paused. */
   pauses: z.array(z.object({ startMs: z.number(), endMs: z.number().optional() })),
   bookmarks: z.array(z.object({ atMs: z.number(), text: z.string(), by: Person })),
+  /** Files and links from the voice channel's chat (when COLLECT_CHAT_MATERIALS is on). */
+  materials: z.array(Material).optional(),
 
   /** Mixed recording of all tracks, relative to the session directory. */
   mixedFile: z.string().optional(),
