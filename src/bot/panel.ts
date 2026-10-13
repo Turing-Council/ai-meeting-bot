@@ -71,6 +71,12 @@ export function buildPanel(session: SessionManifest, extras: PanelExtras = {}): 
     embed.addFields({ name: `📝 Bookmarks (${session.bookmarks.length})`, value: truncate(lines.join('\n'), 1024) });
   }
 
+  if (session.materials?.length) {
+    const files = session.materials.filter((m) => m.kind === 'file').length;
+    const links = session.materials.length - files;
+    embed.addFields({ name: '📎 Materials', value: `${files} file(s), ${links} link(s) from the chat`, inline: true });
+  }
+
   if (session.status === 'recorded') {
     const note = session.tracks.length === 0 ? 'Nobody spoke, so there is no audio.' : `${session.tracks.length} speaker track(s) saved.`;
     embed.setDescription(session.interrupted ? `${note}\nRecovered after an interruption.` : note);

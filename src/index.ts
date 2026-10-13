@@ -25,7 +25,11 @@ async function main(): Promise<void> {
     logger.warn('ffmpeg is not available: recordings are saved per speaker, but mixing and transcription will fail', { error }),
   );
 
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates];
+  // Reading attachments and links in chat needs Message Content, a privileged intent that must
+  // also be switched on in the Discord developer portal.
+  if (config.collectChatMaterials) intents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
+  const client = new Client({ intents });
   const store = new SessionStore(sessionsDir, logger);
   const panel = new PanelUpdater(client, logger);
   const notion = createNotion(config, logger);
@@ -68,6 +72,10 @@ async function main(): Promise<void> {
     void handleInteraction(interaction, { manager, store, pipeline, notion, config, logger });
   });
   client.on(Events.VoiceStateUpdate, (oldState, newState) => manager.handleVoiceStateUpdate(oldState, newState));
+  if (config.collectChatMaterials) {
+    client.on(Events.MessageCreate, (message) => manager.handleMessage(message));
+    client.on(Events.MessageDelete, (message) => manager.handleMessageDelete(message));
+  }
   client.on(Events.Error, (error) => logger.error('Discord client error', { error }));
   client.on(Events.Warn, (message) => logger.warn('Discord client warning', { message }));
 
@@ -86,7 +94,16 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('unhandledRejection', (error) => logger.error('Unhandled rejection', { error }));
 
-  await client.login(config.discordToken);
+  try {
+    await client.login(config.discordToken);
+  } catch (error) {
+    if (error instanceof Error && /disallowed intents/i.test(error.message)) {
+      throw new Error(
+        'Discord refused the Message Content intent. Turn it on in the developer portal (Bot → Privileged Gateway Intents), or set COLLECT_CHAT_MATERIALS=false.',
+      );
+    }
+    throw error;
+  }
 }
 
 main().catch((error: unknown) => {

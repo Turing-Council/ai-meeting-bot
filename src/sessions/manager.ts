@@ -1,4 +1,4 @@
-import { readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   entersState,
@@ -6,7 +6,7 @@ import {
   VoiceConnectionStatus,
   type VoiceConnection,
 } from '@discordjs/voice';
-import type { Client, Guild, SendableChannels, VoiceBasedChannel, VoiceState } from 'discord.js';
+import type { Client, Guild, Message, PartialMessage, SendableChannels, VoiceBasedChannel, VoiceState } from 'discord.js';
 import { buildPanel } from '../bot/panel.js';
 import { PanelUpdater } from '../bot/panel-updater.js';
 import { truncate } from '../bot/format.js';
@@ -15,6 +15,7 @@ import { UserError } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { MeetingRecorder } from '../recorder/recorder.js';
 import { createSessionId, UNFINISHED_STATUSES, type Person, type SessionManifest } from './manifest.js';
+import { downloadFile, materialsFromMessage } from './materials.js';
 import type { SessionStore } from './store.js';
 
 export { UserError };
@@ -34,6 +35,8 @@ interface ActiveSession {
   panelTimer?: NodeJS.Timeout;
   saveChain: Promise<void>;
   stopping?: Promise<SessionManifest>;
+  /** Attachment downloads still running; the session waits for them before it ends. */
+  downloads: Set<Promise<void>>;
 }
 
 export interface StartOptions {
@@ -178,6 +181,7 @@ export class SessionManager {
       connection,
       startMs,
       saveChain: Promise.resolve(),
+      downloads: new Set(),
       recorder: new MeetingRecorder({
         receiver: connection.receiver,
         sessionDir: this.store.sessionDir(id),
@@ -281,6 +285,62 @@ export class SessionManager {
   }
 
   /**
+   * Collects files and links posted in the voice channel's chat while recording (needs the
+   * Message Content intent). Attachments are downloaded right away: Discord's links expire.
+   */
+  handleMessage(message: Message): void {
+    if (!message.inGuild() || message.author.bot) return;
+    const session = this.active.get(message.guildId);
+    if (!session || session.stopping || message.channelId !== session.manifest.voiceChannelId) return;
+
+    const existing = (session.manifest.materials ??= []);
+    const { materials, downloads } = materialsFromMessage(
+      {
+        id: message.id,
+        content: message.content,
+        createdTimestamp: message.createdTimestamp,
+        by: { id: message.author.id, name: message.member?.displayName ?? message.author.username },
+        attachments: [...message.attachments.values()],
+      },
+      session.startMs,
+      new Set(existing.map((m) => m.url)),
+    );
+    if (materials.length === 0) return;
+    existing.push(...materials);
+
+    for (const { material, url, file } of downloads) {
+      const download = this.download(session, url, file)
+        .then(async () => {
+          // The message may have been deleted while downloading.
+          if (session.manifest.materials?.includes(material)) material.file = file;
+          else await rm(this.store.resolve(session.manifest.id, file), { force: true });
+        })
+        .catch((error: unknown) => this.logger.warn('Could not download a chat attachment', { sessionId: session.manifest.id, error }))
+        .finally(() => {
+          session.downloads.delete(download);
+          void this.persist(session);
+        });
+      session.downloads.add(download);
+    }
+    void this.persist(session);
+    this.schedulePanelRefresh(session);
+  }
+
+  /** Forgets materials from a message deleted during the recording. */
+  handleMessageDelete(message: Message | PartialMessage): void {
+    if (!message.guildId) return;
+    const session = this.active.get(message.guildId);
+    const materials = session?.manifest.materials;
+    if (!session || !materials?.some((m) => m.messageId === message.id)) return;
+    for (const material of materials.filter((m) => m.messageId === message.id && m.file)) {
+      void rm(this.store.resolve(session.manifest.id, material.file as string), { force: true });
+    }
+    session.manifest.materials = materials.filter((m) => m.messageId !== message.id);
+    void this.persist(session);
+    this.schedulePanelRefresh(session);
+  }
+
+  /**
    * Finishes sessions that were cut short by a crash or restart: picks up any track files,
    * mixes them and marks the session recorded. Call once the client is ready.
    */
@@ -368,6 +428,7 @@ export class SessionManager {
       this.active.delete(session.guild.id);
       await this.setRecordingNickname(session.guild, false);
     }
+    await Promise.allSettled([...session.downloads]);
 
     await session.saveChain;
     await this.complete(manifest);
@@ -519,6 +580,12 @@ export class SessionManager {
       // Missing "Change Nickname" permission is not fatal; the panel still shows the status.
       this.logger.debug('Could not change nickname', { guildId: guild.id, error });
     }
+  }
+
+  private async download(session: ActiveSession, url: string, relative: string): Promise<void> {
+    const dest = this.store.resolve(session.manifest.id, relative);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await downloadFile(url, dest);
   }
 
   private async ensureParticipant(session: ActiveSession, userId: string): Promise<void> {
