@@ -43,7 +43,9 @@ export function publishStep({ publisher }: { publisher: NotionPublisher }): Pipe
       for (const material of manifest.materials ?? []) {
         if (!material.file) continue;
         try {
-          const id = await upload(material.file, material.contentType ?? 'application/octet-stream', material.name);
+          // Discord may send `text/plain; charset=utf-8`; Notion wants the bare type.
+          const contentType = material.contentType?.split(';')[0]?.trim() || 'application/octet-stream';
+          const id = await upload(material.file, contentType, material.name);
           if (id) materialUploads.set(material.file, id);
         } catch (error) {
           // One unsupported file shouldn't block the meeting page; it's listed as a link instead.
