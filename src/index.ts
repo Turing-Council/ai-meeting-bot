@@ -38,6 +38,7 @@ async function main(): Promise<void> {
   const showOnPanel = panelProcessingListener(store, panel);
   const showInNotion = notion?.publisher.statusListener();
   const pipeline = createPipeline(config, store, logger, {
+    notion: notion?.publisher,
     onUpdate: async (manifest, finished) => {
       await Promise.all([showOnPanel(manifest, finished), showInNotion?.(manifest, finished)]);
     },

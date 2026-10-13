@@ -2,7 +2,7 @@ import type { Logger } from '../logger.js';
 import type { PipelineListener } from '../pipeline/runner.js';
 import type { SessionManifest } from '../sessions/manifest.js';
 import type { CreatedPage, NotionApi } from './api.js';
-import { meetingProperties, statusValue } from './properties.js';
+import { meetingProperties, statusValue, type MeetingUploads } from './properties.js';
 import { MEETING, type MeetingStatus } from './schema.js';
 import type { NotionSettings, NotionSetup } from './settings.js';
 
@@ -53,6 +53,15 @@ export class NotionPublisher {
     }
   }
 
+  /** Writes the final properties (duration, participants, files) and marks the page Done. */
+  async completeMeetingPage(manifest: SessionManifest, uploads: MeetingUploads): Promise<void> {
+    const pageId = manifest.notion?.pageId;
+    if (!pageId) throw new Error('The session has no Notion page');
+    const setup = await this.requireSetup();
+    await this.api.updatePage({ page_id: pageId, properties: meetingProperties(manifest, 'Done', setup.meetings.statusType, uploads) });
+    this.statuses.set(pageId, 'Done');
+  }
+
   async setStatus(manifest: SessionManifest, status: MeetingStatus): Promise<void> {
     const pageId = manifest.notion?.pageId;
     if (!pageId || this.statuses.get(pageId) === status) return;
@@ -61,9 +70,13 @@ export class NotionPublisher {
     this.statuses.set(pageId, status);
   }
 
-  /** Mirrors processing on the page: `Processing` while it runs, `Failed` if a step failed. `Done` is set by publishing. */
+  /**
+   * Mirrors processing on the page: `Processing` while it runs, `Failed` if a step failed.
+   * `Done` is written by the publish step itself, and nothing here overrides it.
+   */
   statusListener(): PipelineListener {
     return async (manifest, finished) => {
+      if (manifest.processing?.publish?.status === 'done') return;
       const failed = Object.values(manifest.processing ?? {}).some((state) => state.status === 'failed');
       const status: MeetingStatus | undefined = !finished ? 'Processing' : failed ? 'Failed' : undefined;
       if (!status) return;

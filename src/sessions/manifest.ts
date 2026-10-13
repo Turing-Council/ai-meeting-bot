@@ -16,7 +16,7 @@ export const UNFINISHED_STATUSES: readonly SessionStatus[] = ['recording', 'paus
 const Person = z.object({ id: z.string(), name: z.string() });
 
 /** Processing steps that run after a session is `recorded`, in order. */
-export const PIPELINE_STEPS = ['mix', 'transcribe', 'summarize'] as const;
+export const PIPELINE_STEPS = ['mix', 'transcribe', 'summarize', 'publish'] as const;
 export type StepName = (typeof PIPELINE_STEPS)[number];
 
 export const StepStatus = z.enum(['pending', 'running', 'done', 'failed']);
@@ -90,7 +90,12 @@ export const SessionManifest = z.object({
    * processing starts, and in sessions that predate it.
    */
   processing: z
-    .object({ mix: StepState.optional(), transcribe: StepState.optional(), summarize: StepState.optional() })
+    .object({
+      mix: StepState.optional(),
+      transcribe: StepState.optional(),
+      summarize: StepState.optional(),
+      publish: StepState.optional(),
+    })
     .optional(),
   /** The meeting's Notion page and the content the bot wrote there (to replace it on a re-run). */
   notion: z

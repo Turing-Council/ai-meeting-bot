@@ -7,7 +7,9 @@ import { createChatModel } from '../summarize/index.js';
 import { Summarizer } from '../summarize/summarizer.js';
 import { Summary } from '../summarize/summary.js';
 import { readJsonFile, SUMMARY_FILE } from './files.js';
+import type { NotionPublisher } from '../notion/publisher.js';
 import { mixStep } from './mix-step.js';
+import { publishStep } from './publish-step.js';
 import { Pipeline, type PipelineListener, type PipelineStep } from './runner.js';
 import { summarizeStep } from './summarize-step.js';
 import { transcribeStep } from './transcribe-step.js';
@@ -18,11 +20,13 @@ export interface CreatePipelineOptions {
   onUpdate?: PipelineListener | undefined;
   /** Names this process in session locks. */
   lockLabel?: string;
+  /** Adds the publish step when Notion is configured. */
+  notion?: NotionPublisher | undefined;
 }
 
 /**
- * Builds the pipeline from config. Mixing always runs; transcribe needs an STT provider, and
- * summarize also needs an LLM.
+ * Builds the pipeline from config. Mixing always runs; transcribe needs an STT provider,
+ * summarize also needs an LLM, and publish needs Notion.
  */
 export function createPipeline(config: Config, store: SessionStore, logger: Logger, options: CreatePipelineOptions = {}): Pipeline {
   const steps: PipelineStep[] = [mixStep({ ffmpegPath: config.ffmpegPath })];
@@ -35,6 +39,7 @@ export function createPipeline(config: Config, store: SessionStore, logger: Logg
       steps.push(summarizeStep({ summarizer }));
     }
   }
+  if (options.notion) steps.push(publishStep({ publisher: options.notion }));
   return new Pipeline({ store, steps, logger, onUpdate: options.onUpdate, ...(options.lockLabel ? { lockLabel: options.lockLabel } : {}) });
 }
 

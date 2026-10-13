@@ -13,6 +13,8 @@ export interface StepContext {
   logger: Logger;
   /** Absolute path of a file inside the session directory. */
   resolve(relative: string): string;
+  /** Saves the manifest now, for steps that must not lose progress made part-way (e.g. IDs of things created in Notion). */
+  checkpoint(): Promise<void>;
 }
 
 export interface PipelineStep {
@@ -21,6 +23,8 @@ export interface PipelineStep {
   needs?: StepName[];
   /** Must be safe to re-run: after a crash or a retry the step runs again from the start. */
   run(context: StepContext): Promise<void>;
+  /** Undoes the step's external effects before a run that starts over (reset `all`). */
+  reset?(context: StepContext): Promise<void>;
 }
 
 /** Called after every state change; `finished` is true once the run ends. */
@@ -158,16 +162,20 @@ export class Pipeline {
       return { outcome: 'not-recorded' };
     }
 
-    if (reset === 'all') await this.clearOutputs(manifest);
-    if (reset === 'failed') resetFailed(manifest);
-    const processing = (manifest.processing ??= {});
-    for (const step of this.steps) processing[step.name] ??= { status: 'pending', attempts: 0 };
-
     const context: StepContext = {
       manifest,
       logger: log,
       resolve: (relative) => path.join(this.store.sessionDir(sessionId), relative),
+      checkpoint: () => this.save(manifest, false),
     };
+
+    if (reset === 'all') {
+      for (const step of this.steps) await step.reset?.(context);
+      await this.clearOutputs(manifest);
+    }
+    if (reset === 'failed') resetFailed(manifest);
+    const processing = (manifest.processing ??= {});
+    for (const step of this.steps) processing[step.name] ??= { status: 'pending', attempts: 0 };
 
     // Steps are listed after the steps they need, so one pass runs everything that can run.
     let ran = false;

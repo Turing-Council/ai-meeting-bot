@@ -146,7 +146,7 @@ describe.skipIf(!hasFfmpeg)('processing pipeline with real ffmpeg', () => {
     expect(work.filter((f) => f.endsWith('.json'))).toHaveLength(3);
 
     // Running the transcription again (e.g. after a crash) costs no new STT calls.
-    await transcribe.run({ manifest: result, logger: silentLogger, resolve: (f) => store.resolve('s1', f) });
+    await transcribe.run({ manifest: result, logger: silentLogger, resolve: (f) => store.resolve('s1', f), checkpoint: async () => {} });
     expect(requests).toHaveLength(3);
   });
 });

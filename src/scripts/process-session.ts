@@ -10,6 +10,7 @@ import path from 'node:path';
 import { loadConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { SUMMARY_FILE } from '../pipeline/files.js';
+import { createNotion } from '../notion/index.js';
 import { createPipeline, loadSummary } from '../pipeline/index.js';
 import { SessionStore } from '../sessions/store.js';
 
@@ -30,7 +31,8 @@ async function main(): Promise<void> {
 
   const sessionId = args.find((arg) => !arg.startsWith('--'));
   if (!sessionId) throw new Error('Missing session ID');
-  const pipeline = createPipeline(config, store, logger, { lockLabel: 'process-session script' });
+  const notion = createNotion(config, logger);
+  const pipeline = createPipeline(config, store, logger, { lockLabel: 'process-session script', notion: notion?.publisher });
   const { outcome, lockedBy } = await pipeline.enqueue(sessionId, args.includes('--force') ? 'all' : 'failed');
 
   if (outcome === 'locked') throw new Error(`Session ${sessionId} is being processed by ${lockedBy ?? 'another process'}; try again later.`);

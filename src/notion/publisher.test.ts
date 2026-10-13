@@ -86,5 +86,9 @@ describe('NotionPublisher', () => {
 
     await listener({ ...session, processing: { mix: { status: 'done', attempts: 2 } } }, true); // Done comes from publishing
     expect(api.pages.get(page.id)?.properties.Status).toEqual({ status: { name: 'Failed' } });
+
+    const calls = api.calls.length;
+    await listener({ ...session, processing: { publish: { status: 'done', attempts: 1 } } }, false); // never overrides Done
+    expect(api.calls).toHaveLength(calls);
   });
 });
