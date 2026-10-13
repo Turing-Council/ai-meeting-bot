@@ -22,7 +22,19 @@ export const meetingCommand = new SlashCommandBuilder()
         opt.setName('text').setDescription('What happened at this moment').setRequired(true).setMaxLength(500),
       ),
   )
-  .addSubcommand((sub) => sub.setName('status').setDescription('Show the current recording'));
+  .addSubcommand((sub) => sub.setName('status').setDescription('Show the current recording or the last meeting'))
+  .addSubcommand((sub) =>
+    sub
+      .setName('setup')
+      .setDescription('Create the Notion databases for meetings (needs Manage Server)')
+      .addStringOption((opt) =>
+        opt
+          .setName('parent')
+          .setDescription('Link to the Notion page that will hold the databases (shared with the integration)')
+          .setRequired(true)
+          .setMaxLength(500),
+      ),
+  );
 
 export const commands = [meetingCommand.toJSON()];
 

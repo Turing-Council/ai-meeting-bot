@@ -17,7 +17,9 @@
     "register": "tsx --env-file-if-exists=.env src/scripts/register-commands.ts",
     "register:prod": "node dist/scripts/register-commands.js",
     "process": "tsx --env-file-if-exists=.env src/scripts/process-session.ts",
-    "process:prod": "node dist/scripts/process-session.js"
+    "process:prod": "node dist/scripts/process-session.js",
+    "notion:setup": "tsx --env-file-if-exists=.env src/scripts/notion-setup.ts",
+    "notion:setup:prod": "node dist/scripts/notion-setup.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

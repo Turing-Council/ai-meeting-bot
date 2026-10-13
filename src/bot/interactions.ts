@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   MessageFlags,
+  PermissionFlagsBits,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -13,6 +14,9 @@ import {
 } from 'discord.js';
 import type { Config } from '../config.js';
 import type { Logger } from '../logger.js';
+import { parseNotionId } from '../notion/ids.js';
+import type { NotionContext } from '../notion/index.js';
+import { describeSetupError, setupNotion } from '../notion/setup.js';
 import { loadSummary } from '../pipeline/index.js';
 import type { Pipeline } from '../pipeline/runner.js';
 import type { Person } from '../sessions/manifest.js';
@@ -27,6 +31,8 @@ export interface InteractionDeps {
   manager: SessionManager;
   store: SessionStore;
   pipeline: Pipeline;
+  /** Undefined when NOTION_TOKEN isn't set. */
+  notion?: NotionContext | undefined;
   config: Config;
   logger: Logger;
 }
@@ -55,7 +61,7 @@ export async function handleInteraction(interaction: Interaction, deps: Interact
 
 async function handleMeetingCommand(
   interaction: ChatInputCommandInteraction<'cached'>,
-  { manager, store, pipeline, config }: InteractionDeps,
+  { manager, store, pipeline, notion, config, logger }: InteractionDeps,
 ): Promise<void> {
   const sub = interaction.options.getSubcommand();
   const member = interaction.member;
@@ -113,6 +119,30 @@ async function handleMeetingCommand(
       }
       const panel = buildPanel(last, { summary: await loadSummary(store, last) });
       await interaction.reply({ content: `${content} Last meeting:`, ...panel, components: [], flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    case 'setup': {
+      if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        throw new UserError('You need the Manage Server permission to set up Notion.');
+      }
+      if (!notion) throw new UserError('Notion is not configured: set NOTION_TOKEN and redeploy first.');
+      const parentId = parseNotionId(interaction.options.getString('parent', true));
+      if (!parentId) throw new UserError("That doesn't look like a Notion page link. Copy it with ••• → Copy link.");
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const { setup, created } = await setupNotion(notion.api, notion.settings, parentId, logger);
+        const links = `**Meetings:** ${setup.meetings.url}\n**Action Items:** ${setup.actionItems.url}`;
+        await interaction.editReply(
+          created
+            ? `✅ Notion is set up. New meetings will be logged there.\n${links}`
+            : `Notion is already set up, so nothing was changed.\n${links}`,
+        );
+      } catch (error) {
+        const message = describeSetupError(error);
+        if (!message) throw error;
+        throw new UserError(message);
+      }
       return;
     }
 

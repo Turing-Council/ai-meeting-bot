@@ -6,6 +6,7 @@ import { handleInteraction } from './bot/interactions.js';
 import { PanelUpdater, panelProcessingListener } from './bot/panel-updater.js';
 import { loadConfig } from './config.js';
 import { createLogger } from './logger.js';
+import { createNotion } from './notion/index.js';
 import { createPipeline } from './pipeline/index.js';
 import { runFfmpeg } from './recorder/mixdown.js';
 import { SessionManager } from './sessions/manager.js';
@@ -27,6 +28,10 @@ async function main(): Promise<void> {
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
   const store = new SessionStore(sessionsDir, logger);
   const panel = new PanelUpdater(client, logger);
+  const notion = createNotion(config);
+  if (notion && !(await notion.settings.get())) {
+    logger.warn('NOTION_TOKEN is set but Notion is not set up yet: run /meeting setup in Discord');
+  }
 
   // Mix, transcribe → summarize after each recording; progress and results show on the panel.
   const pipeline = createPipeline(config, store, logger, { onUpdate: panelProcessingListener(store, panel) });
@@ -51,7 +56,7 @@ async function main(): Promise<void> {
       .catch((error: unknown) => logger.error('Resuming processing failed', { error }));
   });
   client.on(Events.InteractionCreate, (interaction) => {
-    void handleInteraction(interaction, { manager, store, pipeline, config, logger });
+    void handleInteraction(interaction, { manager, store, pipeline, notion, config, logger });
   });
   client.on(Events.VoiceStateUpdate, (oldState, newState) => manager.handleVoiceStateUpdate(oldState, newState));
   client.on(Events.Error, (error) => logger.error('Discord client error', { error }));
