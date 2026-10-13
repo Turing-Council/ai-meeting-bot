@@ -29,7 +29,7 @@ describe('mergeSegments', () => {
 });
 
 describe('renderTranscriptMarkdown', () => {
-  it('adds a header and one paragraph per turn', () => {
+  it('adds a header, one paragraph per turn and bookmarks where they were made', () => {
     const manifest = {
       title: 'Weekly sync',
       startedAt: '2026-10-13T14:00:00.000Z',
@@ -38,13 +38,15 @@ describe('renderTranscriptMarkdown', () => {
         { id: 'u1', name: 'Alice' },
         { id: 'u2', name: 'Bob' },
       ],
+      bookmarks: [{ atMs: 60_000, text: 'Decision: ship', by: { id: 'u1', name: 'Alice' } }],
     } as SessionManifest;
     const md = renderTranscriptMarkdown(manifest, [alice(0, 2_000, 'Hi.'), bob(3_723_000, 3_724_000, 'Bye.')]);
     expect(md).toContain('# Weekly sync');
     expect(md).toContain('- **Date:** 2026-10-13 14:00 UTC');
     expect(md).toContain('- **Participants:** Alice, Bob');
-    expect(md).toContain('**[00:00] Alice:** Hi.\n');
-    expect(md).toContain('**[01:02:03] Bob:** Bye.\n');
-    expect(renderTranscriptMarkdown(manifest, [])).toContain('_No speech was transcribed._');
+    expect(md).toContain('**[00:00] Alice:** Hi.\n\n> 📝 **[01:00] Bookmark:** Decision: ship (Alice)\n\n**[01:02:03] Bob:** Bye.\n');
+    const empty = renderTranscriptMarkdown(manifest, []);
+    expect(empty).toContain('_No speech was transcribed._');
+    expect(empty).toContain('Decision: ship');
   });
 });
