@@ -13,14 +13,14 @@ Milestones follow the plan in `REQUIREMENTS.md`. They're tracked as tasks on the
 |---|---|---|---|
 | M0 | Setup | Repo, Docker, Dokploy, bot token | 🟡 Code done (2026-10-13). Waiting on Discord app/token and first Dokploy deploy |
 | M1 | Record | Join, record, save audio | 🟡 Code done (2026-10-13). Waiting on a manual test on a real server |
-| M2 | Transcribe & Summarize | STT + LLM, job pipeline | ⚪ Not started |
+| M2 | Transcribe & Summarize | STT + LLM, job pipeline | 🟡 Code done (2026-10-13). Waiting on choosing providers and a test with real meetings |
 | M3 | Notion | Databases, meeting page, action items | ⚪ Not started |
 | M4 | Polish | Auto-record, permissions, cleanup | ⚪ Not started (permissions already done in M1) |
 
 A milestone counts as **done** only after it works against a real Discord server, not just in
 tests.
 
-## Current scope (M0 + M1)
+## Current scope (M0–M2)
 
 **In:**
 - Slash commands `/meeting start [title] [type]`, `stop`, `note <text>`, `status`
@@ -31,10 +31,16 @@ tests.
 - Optional recorder role (`RECORDER_ROLE_ID`)
 - Crash recovery: interrupted sessions get finished and mixed on the next start
 - Graceful shutdown on `SIGTERM` (Dokploy redeploys)
+- Processing after each recording: per-speaker transcription → speaker-labelled transcript →
+  structured summary (TL;DR, key points, decisions, action items, open questions)
+- Any provider through the OpenAI-compatible APIs (`STT_*`, `LLM_*`), plus `mock` providers
+- Progress, TL;DR, action items and the attached `transcript.md` on the control panel; a
+  Retry button when a step fails
+- Jobs resume after a restart; per-chunk caches avoid paying twice
+- `process-session` script to (re)process a session by hand
 
 **Out (later milestones):**
-- Transcription and summaries (M2)
-- Anything in Notion (M3)
+- Anything in Notion (M3), including uploading audio/transcript and the "Notion link" on the panel
 - Collecting files/links from chat (M3)
 - Auto-record on channel join (M4)
 - Deleting old audio (M4)
@@ -56,6 +62,7 @@ tests.
 | Audio | Raw Opus packets → our own Ogg writer; ffmpeg only for the mixdown |
 | Storage | Files on disk: one directory per session with a JSON manifest (no database yet) |
 | Tests | `vitest` |
+| AI providers | OpenAI-compatible HTTP APIs via `fetch` (no vendor SDKs): `/audio/transcriptions`, `/chat/completions` |
 | Deploy | Dockerfile → Dokploy, persistent volume at `/app/data` |
 
 No Opus encoder/decoder library is installed (`@discordjs/opus`, `opusscript`): the bot never
@@ -69,8 +76,12 @@ Discord voice ──per-user Opus packets──▶ MeetingRecorder ──▶ Tim
 SessionManager ── start/pause/stop ────────────┘                 with silence)
      │                                                                   stop ──▶ ffmpeg amix ──▶ mixed.ogg
      ├── manifest.json (SessionStore, atomic writes)
-     ├── control panel (bot/panel.ts)
-     └── crash recovery on boot
+     ├── control panel (PanelUpdater)
+     ├── crash recovery on boot
+     └── onRecorded ──▶ Pipeline (one job at a time, state in manifest.processing)
+                          1. transcribe: silencedetect → speech chunks → SttProvider → merge → transcript.json/.md
+                          2. summarize:  transcript + bookmarks → Summarizer (map-reduce) → ChatModel → summary.json
+                          └── progress/results ──▶ PanelUpdater (TL;DR, action items, transcript.md attached)
 ```
 
 ### Modules
@@ -87,9 +98,17 @@ SessionManager ── start/pause/stop ────────────┘  
 | `src/sessions/manifest.ts` | Session schema (zod), status lifecycle, session IDs |
 | `src/sessions/store.ts` | One directory per session, atomic manifest writes |
 | `src/sessions/manager.ts` | Session lifecycle: join/leave, pause, bookmarks, empty timeout, nickname, panel, recovery |
-| `src/bot/` | Slash command definitions, interaction router, panel builder, permissions, formatting |
+| `src/bot/` | Slash command definitions, interaction router, panel builder + updater, permissions, formatting |
+| `src/pipeline/runner.ts` | Job queue and step state machine: resume after restart, stop on failure, retry |
+| `src/pipeline/transcribe-step.ts` · `summarize-step.ts` | The two steps, with per-chunk caches under `work/` |
+| `src/transcript/speech.ts` | ffmpeg `silencedetect` → speech regions → chunks; chunk extraction |
+| `src/transcript/transcript.ts` | Merging per-speaker segments into turns; `transcript.json` schema; Markdown |
+| `src/stt/` | `SttProvider` interface, `mock` and `openai-compatible` adapters |
+| `src/summarize/` | `ChatModel` interface and adapters, `Summary` schema, prompt, map-reduce, JSON repair |
+| `src/http.ts` | Provider HTTP calls: timeout, retries on network/408/429/5xx, `Retry-After` |
 | `src/scripts/register-commands.ts` | Registers slash commands and prints the invite link |
-| `src/test-utils/` | Independent Ogg parser used by the tests (not built into `dist`) |
+| `src/scripts/process-session.ts` | Runs the pipeline on one session without Discord (`--list`, `--force`) |
+| `src/test-utils/` | Independent Ogg parser and a fake HTTP server, used by the tests (not built into `dist`) |
 
 ### Key design decisions
 
@@ -111,8 +130,28 @@ SessionManager ── start/pause/stop ────────────┘  
   change), the bot resubscribes the next time that user speaks and keeps writing to the same file.
 - **Panel edits go through the channel**, not the interaction token, because interaction tokens
   expire after 15 minutes.
-- **Provider-agnostic AI (from M2 on).** Speech-to-text and summarization each sit behind their
-  own interface, configured with `STT_*` / `LLM_*` variables. No single vendor is baked in.
+- **Provider-agnostic AI.** Speech-to-text (`SttProvider`) and the LLM (`ChatModel`) each sit
+  behind a one-method interface. The real adapter for each speaks the OpenAI-compatible HTTP API,
+  which almost every hosted service and self-hosted server supports, so switching providers is a
+  config change. A provider with its own API gets a new adapter file and a new `*_PROVIDER` value.
+- **Transcribe per speaker, only the speech.** Discord already separates speakers, so there's no
+  diarization. Each track is cut at silences of 1 s or more (`-40dB`), regions within 10 s are
+  grouped into one chunk (max 10 min), padded 250 ms. Silence is never sent: providers bill per
+  audio minute, and Whisper-style models invent text on silence. Segments with Whisper's
+  "no speech + low confidence" signature are dropped as well.
+- **Pipeline state in the manifest, not SQLite.** The spec suggested SQLite for job state; per-step
+  state in `manifest.json` (`processing.transcribe/summarize`: status, attempts, error) turned out
+  to be enough for one server and keeps a session self-contained in its directory. Revisit if
+  M3/M4 need cross-session queries.
+- **Retries at two levels.** Each HTTP call retries transient failures (network, 408, 429, 5xx;
+  honouring `Retry-After`). A step that still fails stays `failed` until someone presses Retry;
+  boot only resumes `pending`/`running` steps, so a bad API key doesn't loop and burn money.
+- **Caching makes steps re-runnable.** Each STT chunk's result is cached by
+  `<userId>-<start>-<end>`; each LLM call by a hash of its exact prompt. A crash or retry
+  re-runs the step from the start but only pays for work that didn't finish.
+- **Lenient summary parsing.** The model's JSON goes through a forgiving zod schema (missing
+  lists → empty, malformed action items dropped, non-ISO due dates folded into the task text).
+  If the reply isn't usable at all, the model gets one repair round with the error.
 
 ## Data layout
 
@@ -121,6 +160,11 @@ $DATA_DIR/sessions/<YYYYMMDD-HHMMSS-xxxx>/
   manifest.json
   tracks/<discordUserId>.ogg
   mixed.ogg
+  transcript.json           # { version, sessionId, turns: [{ speakerId, speaker, startMs, endMs, text }] }
+  transcript.md
+  summary.json              # { tldr, keyPoints, decisions, actionItems: [{ task, owner, due }], openQuestions }
+  work/stt/<userId>-<startMs>-<endMs>.json   # cached STT result per chunk
+  work/llm/<label>-<hash>.json               # cached LLM result per call
 ```
 
 `manifest.json` holds:
@@ -129,6 +173,7 @@ $DATA_DIR/sessions/<YYYYMMDD-HHMMSS-xxxx>/
 - `participants` (everyone present) and `tracks` (only people who spoke)
 - `pauses` and `bookmarks`, as ms offsets from the start
 - the panel message location
+- `processing`: state of each configured step, plus the output file names
 
 Paths inside the manifest are relative to the session directory.
 
@@ -138,7 +183,9 @@ Paths inside the manifest are relative to the session directory.
 npm install
 cp .env.example .env     # DISCORD_TOKEN, DISCORD_CLIENT_ID, DISCORD_GUILD_ID (for instant command updates)
 npm run register         # after changing commands
-npm run dev              # tsx watch with .env
+npm run dev              # tsx watch with .env (STT_PROVIDER=mock LLM_PROVIDER=mock for a free end-to-end run)
+npm run process -- --list            # sessions + processing state
+npm run process -- <id> [--force]    # (re)process one session offline
 npm test                 # unit tests; ffmpeg tests skip if ffmpeg is missing
 npm run typecheck
 npm run build            # → dist/
@@ -159,15 +206,32 @@ approved in `package.json` under `allowScripts`. If an update to it fails, run
 - `ffmpeg.integration.test.ts` encodes a real Opus tone and checks decoding, timeline placement
   (`silencedetect`), the mixdown, and a truncated "crashed" file. It only runs where ffmpeg is
   installed, which includes the Docker `test` stage.
-- Live Discord behavior is covered by the manual checklist in the README.
+- Provider adapters are tested against a local fake HTTP server: request shape (multipart,
+  JSON body, auth header), parsing, retry and fail-fast behaviour.
+- The summarizer is tested with a scripted `ChatModel`: single call, map-reduce, JSON repair,
+  caching.
+- `pipeline.integration.test.ts` places Opus tones on two speakers' tracks and runs the real
+  pipeline (ffmpeg speech detection and chunking, fake STT, mock LLM). It checks that only
+  speech is sent, that lines land at the right time with the right speaker, and that a re-run
+  makes no new STT calls. Like the other ffmpeg tests, it runs in the Docker `test` stage.
+- Live Discord behavior and real providers are covered by the manual checklist in the README.
 
-## Next up (M2)
+## Open points for M2
 
-1. Speech-to-text interface: `transcribe(track) → segments[{ startMs, endMs, text }]`, plus a mock
-   provider, plus a first real adapter chosen through `STT_PROVIDER`.
-2. LLM interface: `summarize(transcript, bookmarks) → { tldr, keyPoints, decisions, actionItems, openQuestions }`,
-   validated with zod, chunked for long meetings, with a mock and a first real adapter
-   (`LLM_PROVIDER`).
-3. Job pipeline after `recorded`: transcribe → summarize. Each step can be re-run safely and
-   resumes after a restart. This is where SQLite (or step status kept in the manifest) comes in.
-4. Speaker-labelled transcript output (`[00:12:31] Alice: …`) saved next to the audio.
+- **Pick the providers.** Any OpenAI-compatible endpoint works. Main trade-off for STT:
+  hosted (no GPU, pay per minute) vs. a self-hosted Whisper server on the VPS (free, but needs
+  CPU/GPU headroom; CPU-only is slow for long meetings).
+- **Tune on real meetings:** silence threshold (`-40dB`), chunk grouping (10 s) and the summary
+  prompt were chosen from first principles and only tested on synthetic audio.
+
+## Next up (M3)
+
+1. Notion client + `setup` script: create the Meetings and Action Items databases under a parent
+   page, store their IDs.
+2. Meeting page created at `/meeting start` (status `Recording`), completed after processing:
+   properties, body template (summary, decisions, action items, open questions, bookmarks,
+   materials, transcript in a toggle).
+3. A `publish` pipeline step: upload `mixed.ogg` and `transcript.md` (File Upload API), create
+   Action Items with a relation to the meeting. Same resume/retry rules as the other steps.
+4. Collect attachments and links posted in the voice channel's chat during the session.
+5. Notion link on the control panel.

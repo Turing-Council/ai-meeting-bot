@@ -1,9 +1,9 @@
 # Turing Voice Bot
 
 A Discord bot that joins a voice channel, records the meeting (one track per speaker plus a mix),
-and, in later milestones, transcribes it, summarizes it and logs it to Notion.
+transcribes and summarizes it, and, in a later milestone, logs it to Notion.
 
-Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Status: **M0 Setup + M1 Record**
+Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize**
 
 ## What works now
 
@@ -16,6 +16,11 @@ Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Status: **M0 Setup + M1 
 - While recording, the bot's nickname gets a 🔴 prefix.
 - **Crash-safe:** audio reaches disk every ~2 s. If the bot crashes or is redeployed mid-meeting,
   the session is finished and mixed automatically on the next start.
+- **Transcript and summary** (when a provider is configured): after the recording, the panel
+  shows progress, then the TL;DR, decisions, action items and open questions, with
+  `transcript.md` attached. If a step fails, a **Retry processing** button appears.
+- **Any AI provider:** speech-to-text and the LLM are configured separately, against any server
+  that speaks the common OpenAI-compatible API, hosted or self-hosted.
 
 > **One recording per server.** Discord lets a bot be in only one voice channel per server.
 
@@ -36,6 +41,49 @@ data/sessions/<session-id>/
 
 Session status: `recording ⇄ paused → finalizing → recorded` (or `failed` if mixing failed;
 the per-speaker tracks are always kept).
+
+## How processing works
+
+Once a session is `recorded`, a job runs two steps, one session at a time:
+
+1. **Transcribe.** For each speaker's track, ffmpeg finds the stretches with speech
+   (`silencedetect`) and cuts them into small mono chunks. Only those chunks are sent to the
+   speech-to-text provider, never the silence (providers bill per audio minute, and silence makes
+   Whisper-style models invent text). Each line keeps its speaker and its time on the meeting
+   clock, and all speakers are merged into `transcript.json` and `transcript.md`
+   (`**[00:12:31] Alice:** …`).
+2. **Summarize.** The transcript, the participant list and the bookmarks go to the LLM, which
+   returns JSON: TL;DR, key points, decisions, action items (task, owner, due date) and open
+   questions. The JSON is validated; long meetings are summarized in parts and then combined.
+   Result: `summary.json`.
+
+Each step's state is kept in `manifest.json`. A job cut short by a restart resumes on the next
+start, and results of each speech chunk and LLM call are cached under `work/`, so a retry
+doesn't pay for the same audio twice. Network errors, rate limits and 5xx responses are retried
+automatically.
+
+```
+data/sessions/<session-id>/
+  transcript.json      # speaker turns with ms offsets (input for Notion)
+  transcript.md        # readable transcript, attached to the panel
+  summary.json         # tldr, keyPoints, decisions, actionItems, openQuestions
+  work/                # per-chunk caches
+```
+
+### Choosing providers
+
+Both settings take any OpenAI-compatible endpoint (`STT_BASE_URL`, `LLM_BASE_URL`):
+
+- **Speech-to-text** (`POST /audio/transcriptions`): a hosted Whisper-style API, or a
+  self-hosted server such as faster-whisper or whisper.cpp running next to the bot in Dokploy.
+  Use `STT_RESPONSE_FORMAT=json` for models that don't return segment timestamps.
+- **LLM** (`POST /chat/completions`): a hosted model, an LLM router, or a self-hosted server
+  (Ollama, vLLM, LM Studio, llama.cpp). Set `LLM_JSON_MODE=none` if the server rejects
+  `response_format`.
+
+Without `STT_PROVIDER`, the bot only records (as in M1). Without `LLM_PROVIDER`, it transcribes
+but doesn't summarize. `mock` runs everything offline with placeholder text, which is handy for
+testing the flow on Discord without paying for API calls.
 
 ## Discord setup (once)
 
@@ -60,6 +108,19 @@ Copy `.env.example` to `.env` and fill it in.
 | `EMPTY_CHANNEL_TIMEOUT_MIN` | | `2` | Leave after the channel is empty this long |
 | `RECORDER_ROLE_ID` | | | If set, only this role (or Manage Server) can start/stop/pause |
 | `FFMPEG_PATH` | | `ffmpeg` | ffmpeg binary used for the mixdown |
+| `STT_PROVIDER` | | `none` | `none` · `mock` · `openai-compatible` |
+| `STT_BASE_URL` | for `openai-compatible` | | e.g. `http://whisper:8000/v1` |
+| `STT_API_KEY` | | | Empty for servers without auth |
+| `STT_MODEL` | for `openai-compatible` | | Model name as the server expects it |
+| `STT_LANGUAGE` | | `en` | Spoken language (ISO 639-1) |
+| `STT_RESPONSE_FORMAT` | | `verbose_json` | `json` for models without segment timestamps |
+| `LLM_PROVIDER` | | `none` | `none` · `mock` · `openai-compatible` |
+| `LLM_BASE_URL` | for `openai-compatible` | | e.g. `http://ollama:11434/v1` |
+| `LLM_API_KEY` | | | Empty for servers without auth |
+| `LLM_MODEL` | for `openai-compatible` | | Model name as the server expects it |
+| `LLM_JSON_MODE` | | `json_object` | `none` if the server rejects `response_format` |
+| `LLM_TEMPERATURE` | | model default | Some models only accept their default |
+| `LLM_CHUNK_CHARS` | | `48000` | Transcript characters per call; longer meetings are split |
 | `LOG_LEVEL` | | `info` | `debug` · `info` · `warn` · `error` |
 | `TZ` | | system | Time zone for default meeting titles, e.g. `Europe/Rome` |
 
@@ -86,7 +147,22 @@ npm run dev            # starts with reload on change
    (or run `npm run register` from your machine with the same env).
 
 On redeploy, Docker sends `SIGTERM`. The bot closes all audio files and leaves voice, and the
-new container mixes any interrupted session when it starts.
+new container mixes any interrupted session when it starts, then resumes any processing job that
+was running.
+
+### Reprocessing a session
+
+To run processing by hand (e.g. after changing providers, or for a meeting recorded before
+processing was enabled), use the app's terminal:
+
+```bash
+node dist/scripts/process-session.js --list               # sessions and their processing state
+node dist/scripts/process-session.js <session-id>         # resume, retrying failed steps
+node dist/scripts/process-session.js <session-id> --force # start over, ignoring caches
+```
+
+Locally: `npm run process -- <session-id>`. Don't reprocess a session the running bot is
+processing at the same time.
 
 ## Tests
 
@@ -111,6 +187,10 @@ Voice can't be fully unit-tested. Before relying on it, check on a test server w
 - [ ] Everyone leaves the channel → the bot stops after the timeout
 - [ ] Kill the bot mid-meeting (`docker kill`, or Ctrl+C twice) and start it again → the session becomes `recorded` with `interrupted: true` and earlier audio is kept
 - [ ] With `RECORDER_ROLE_ID` set, a member without the role can't start or stop
+- [ ] With `STT_PROVIDER=mock` and `LLM_PROVIDER=mock`: after stop, the panel shows ⏳ → ✅ for Transcript and Summary, the mock TL;DR, and `transcript.md` attached
+- [ ] With real providers: names and timestamps in `transcript.md` match who said what; the summary's action items make sense
+- [ ] Wrong API key → the panel shows ⚠️ with the error and a **Retry processing** button; fix the key, redeploy, press Retry → it finishes
+- [ ] Redeploy while "Transcribing" → after restart it resumes and finishes without re-sending chunks already done
 
 ## Project layout
 
@@ -121,11 +201,15 @@ src/
   bot/                     slash commands, buttons/modals, control panel
   recorder/                Opus/Ogg writer, time-aligned tracks, receiver → files, ffmpeg mixdown
   sessions/                session manifest, on-disk store, session lifecycle + crash recovery
-  scripts/register-commands.ts
+  pipeline/                job runner (transcribe → summarize), steps, resume/retry
+  stt/                     speech-to-text interface + adapters (mock, OpenAI-compatible)
+  summarize/               LLM interface + adapters, prompt, summary schema, map-reduce
+  transcript/              speech detection/chunking (ffmpeg), merging and rendering transcripts
+  http.ts                  HTTP client for providers: timeouts, retries, Retry-After
+  scripts/                 register-commands.ts, process-session.ts
 ```
 
 ## Next milestones
 
-- **M2 Transcribe & Summarize:** speech-to-text and LLM provider interfaces (any provider), job pipeline
 - **M3 Notion:** Meetings and Action Items databases, meeting page, chat materials
 - **M4 Polish:** auto-record, cleanup of old audio
