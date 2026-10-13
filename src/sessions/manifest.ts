@@ -13,6 +13,22 @@ export const UNFINISHED_STATUSES: readonly SessionStatus[] = ['recording', 'paus
 
 const Person = z.object({ id: z.string(), name: z.string() });
 
+/** Processing steps that run after a session is `recorded`, in order. */
+export const PIPELINE_STEPS = ['transcribe', 'summarize'] as const;
+export type StepName = (typeof PIPELINE_STEPS)[number];
+
+export const StepStatus = z.enum(['pending', 'running', 'done', 'failed']);
+export type StepStatus = z.infer<typeof StepStatus>;
+
+const StepState = z.object({
+  status: StepStatus,
+  attempts: z.number(),
+  startedAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+  error: z.string().optional(),
+});
+export type StepState = z.infer<typeof StepState>;
+
 export const SessionManifest = z.object({
   version: z.literal(1),
   id: z.string(),
@@ -48,6 +64,16 @@ export const SessionManifest = z.object({
   mixedFile: z.string().optional(),
   durationMs: z.number().optional(),
   error: z.string().optional(),
+
+  /**
+   * State of each processing step (only the steps that are configured). Missing when
+   * processing is off or the session predates it.
+   */
+  processing: z.object({ transcribe: StepState.optional(), summarize: StepState.optional() }).optional(),
+  /** Outputs of the processing steps, relative to the session directory. */
+  transcriptFile: z.string().optional(),
+  transcriptDataFile: z.string().optional(),
+  summaryFile: z.string().optional(),
 });
 export type SessionManifest = z.infer<typeof SessionManifest>;
 export type Person = z.infer<typeof Person>;

@@ -31,10 +31,7 @@ export class SessionStore {
 
   async save(manifest: SessionManifest): Promise<void> {
     const valid = SessionManifest.parse(manifest);
-    const file = path.join(this.sessionDir(valid.id), MANIFEST_FILE);
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(valid, null, 2)}\n`);
-    await rename(tmp, file);
+    await writeFileAtomic(path.join(this.sessionDir(valid.id), MANIFEST_FILE), `${JSON.stringify(valid, null, 2)}\n`);
   }
 
   async load(id: string): Promise<SessionManifest> {
@@ -62,4 +59,13 @@ export class SessionStore {
     }
     return manifests;
   }
+}
+
+let tmpCounter = 0;
+
+/** Writes via a temp file + rename, so readers (and crashes) never see a half-written file. */
+export async function writeFileAtomic(file: string, data: string | Uint8Array): Promise<void> {
+  const tmp = `${file}.${process.pid}.${Date.now()}.${tmpCounter++}.tmp`;
+  await writeFile(tmp, data);
+  await rename(tmp, file);
 }
