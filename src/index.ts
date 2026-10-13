@@ -3,10 +3,10 @@ import path from 'node:path';
 import { generateDependencyReport } from '@discordjs/voice';
 import { Client, Events, GatewayIntentBits } from 'discord.js';
 import { handleInteraction } from './bot/interactions.js';
-import { PanelUpdater } from './bot/panel-updater.js';
+import { PanelUpdater, panelProcessingListener } from './bot/panel-updater.js';
 import { loadConfig } from './config.js';
 import { createLogger } from './logger.js';
-import { createPipeline, loadSummary } from './pipeline/index.js';
+import { createPipeline } from './pipeline/index.js';
 import { runFfmpeg } from './recorder/mixdown.js';
 import { SessionManager } from './sessions/manager.js';
 import { SessionStore } from './sessions/store.js';
@@ -21,22 +21,15 @@ async function main(): Promise<void> {
   await mkdir(sessionsDir, { recursive: true });
   logger.debug('Voice dependencies', { report: generateDependencyReport() });
   await runFfmpeg(config.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-version']).catch((error: unknown) =>
-    logger.warn('ffmpeg is not available: recordings will be saved per speaker but not mixed', { error }),
+    logger.warn('ffmpeg is not available: recordings are saved per speaker, but mixing and transcription will fail', { error }),
   );
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
   const store = new SessionStore(sessionsDir, logger);
   const panel = new PanelUpdater(client, logger);
 
-  // Transcribe → summarize after each recording; progress and results show on the panel.
-  const pipeline = createPipeline(config, store, logger, async (manifest, finished) => {
-    if (!finished) return panel.update(manifest);
-    const transcript = manifest.processing?.transcribe?.status === 'done' ? manifest.transcriptFile : undefined;
-    await panel.update(manifest, {
-      summary: await loadSummary(store, manifest),
-      attachments: transcript ? [{ file: store.resolve(manifest.id, transcript), name: 'transcript.md' }] : undefined,
-    });
-  });
+  // Mix, transcribe → summarize after each recording; progress and results show on the panel.
+  const pipeline = createPipeline(config, store, logger, { onUpdate: panelProcessingListener(store, panel) });
   logger.info('Processing', { steps: pipeline.stepNames, stt: config.stt.provider, llm: config.llm.provider });
 
   const manager = new SessionManager({

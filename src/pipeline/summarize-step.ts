@@ -11,6 +11,7 @@ import type { PipelineStep, StepContext } from './runner.js';
 export function summarizeStep({ summarizer }: { summarizer: Summarizer }): PipelineStep {
   return {
     name: 'summarize',
+    needs: ['transcribe'],
     async run({ manifest, resolve }: StepContext) {
       const transcriptFile = resolve(manifest.transcriptDataFile ?? TRANSCRIPT_DATA_FILE);
       const transcript = Transcript.parse(JSON.parse(await readFile(transcriptFile, 'utf8')));

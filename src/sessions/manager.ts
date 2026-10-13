@@ -13,7 +13,6 @@ import { truncate } from '../bot/format.js';
 import type { Config } from '../config.js';
 import { UserError } from '../errors.js';
 import type { Logger } from '../logger.js';
-import { mixdown } from '../recorder/mixdown.js';
 import { MeetingRecorder } from '../recorder/recorder.js';
 import { createSessionId, UNFINISHED_STATUSES, type Person, type SessionManifest } from './manifest.js';
 import type { SessionStore } from './store.js';
@@ -24,7 +23,6 @@ const CONNECT_TIMEOUT_MS = 20_000;
 const RECONNECT_GRACE_MS = 5_000;
 const PANEL_REFRESH_DEBOUNCE_MS = 3_000;
 const RECORDING_NICK_PREFIX = '🔴 ';
-const MIXED_FILE = 'mixed.ogg';
 
 interface ActiveSession {
   manifest: SessionManifest;
@@ -297,8 +295,8 @@ export class SessionManager {
   }
 
   /**
-   * On process shutdown: close all tracks and leave voice quickly, without mixing.
-   * The sessions are left as `finalizing` and get mixed by recoverInterrupted() on next boot.
+   * On process shutdown: close all tracks and leave voice quickly. The sessions are left as
+   * `finalizing`; recoverInterrupted() completes them and hands them to processing on next boot.
    */
   async shutdown(): Promise<void> {
     await Promise.all(
@@ -308,7 +306,7 @@ export class SessionManager {
           return;
         }
         const endMs = this.now();
-        // Deregister first so the connection's Destroyed event doesn't trigger a full stop + mixdown.
+        // Deregister first so the connection's Destroyed event doesn't trigger a full stop.
         this.active.delete(session.guild.id);
         this.clearTimers(session);
         this.closeOpenPause(session, endMs);
@@ -354,7 +352,7 @@ export class SessionManager {
     }
 
     await session.saveChain;
-    await this.mixAndComplete(manifest);
+    await this.complete(manifest);
     await this.refreshPanel(manifest);
     log.info('Recording stopped', { reason, status: manifest.status, durationMs: manifest.durationMs });
     this.notifyRecorded(manifest);
@@ -385,10 +383,7 @@ export class SessionManager {
     manifest.endedAt ??= new Date(endMs).toISOString();
     manifest.endReason ??= 'interrupted (bot restarted or crashed)';
     manifest.durationMs ??= endMs - startMs;
-    manifest.status = 'finalizing';
-    await this.store.save(manifest);
-
-    await this.mixAndComplete(manifest);
+    await this.complete(manifest);
     await this.refreshPanel(manifest);
     this.notifyRecorded(manifest);
   }
@@ -402,27 +397,9 @@ export class SessionManager {
     }
   }
 
-  private async mixAndComplete(manifest: SessionManifest): Promise<void> {
-    if (manifest.tracks.length === 0) {
-      manifest.status = 'recorded';
-      await this.store.save(manifest);
-      return;
-    }
-    try {
-      await mixdown(
-        this.config.ffmpegPath,
-        manifest.tracks.map((t) => this.store.resolve(manifest.id, t.file)),
-        this.store.resolve(manifest.id, MIXED_FILE),
-      );
-      manifest.mixedFile = MIXED_FILE;
-      manifest.status = 'recorded';
-      delete manifest.error;
-    } catch (error) {
-      // The per-speaker tracks are still on disk; only the mixed file is missing.
-      manifest.status = 'failed';
-      manifest.error = error instanceof Error ? error.message : String(error);
-      this.logger.error('Mixdown failed', { sessionId: manifest.id, error });
-    }
+  /** The tracks are closed and on disk: the recording is done. Mixing happens in processing. */
+  private async complete(manifest: SessionManifest): Promise<void> {
+    manifest.status = 'recorded';
     await this.store.save(manifest);
   }
 

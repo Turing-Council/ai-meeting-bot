@@ -14,6 +14,7 @@ import { Summarizer } from '../summarize/summarizer.js';
 import { Summary } from '../summarize/summary.js';
 import { readOggPackets } from '../test-utils/ogg-reader.js';
 import { Transcript } from '../transcript/transcript.js';
+import { mixStep } from './mix-step.js';
 import { Pipeline } from './runner.js';
 import { summarizeStep } from './summarize-step.js';
 import { transcribeStep } from './transcribe-step.js';
@@ -64,7 +65,7 @@ describe.skipIf(!hasFfmpeg)('processing pipeline with real ffmpeg', () => {
   const durationMs = (file: string) =>
     1000 * Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file]).toString());
 
-  it('transcribes each speaker separately, places lines on the meeting timeline and summarizes', async () => {
+  it('mixes, transcribes each speaker separately, places lines on the meeting timeline and summarizes', async () => {
     const manifest: SessionManifest = {
       version: 1,
       id: 's1',
@@ -101,15 +102,20 @@ describe.skipIf(!hasFfmpeg)('processing pipeline with real ffmpeg', () => {
         return [{ startMs: 200, endMs: request.durationMs - 200, text: `utterance ${requests.length}` }];
       },
     };
+    const transcribe = transcribeStep({ stt, ffmpegPath: 'ffmpeg', concurrency: 1 });
     const steps = [
-      transcribeStep({ stt, ffmpegPath: 'ffmpeg', concurrency: 1 }),
+      mixStep({ ffmpegPath: 'ffmpeg' }),
+      transcribe,
       summarizeStep({ summarizer: new Summarizer({ model: new MockChatModel(), chunkChars: 10_000, logger: silentLogger }) }),
     ];
     await new Pipeline({ store, steps, logger: silentLogger }).enqueue('s1');
 
     const result = await store.load('s1');
+    expect(result.processing?.mix?.status).toBe('done');
     expect(result.processing?.transcribe?.status).toBe('done');
     expect(result.processing?.summarize?.status).toBe('done');
+    expect(result.mixedFile).toBe('mixed.ogg');
+    expect(durationMs(store.resolve('s1', 'mixed.ogg'))).toBeCloseTo(45_000, -3);
 
     // Only the speech is sent: three ~1.5 s chunks (1 s tone + padding), not 2 × 45 s of audio.
     expect(requests).toHaveLength(3);
@@ -140,7 +146,7 @@ describe.skipIf(!hasFfmpeg)('processing pipeline with real ffmpeg', () => {
     expect(work.filter((f) => f.endsWith('.json'))).toHaveLength(3);
 
     // Running the transcription again (e.g. after a crash) costs no new STT calls.
-    await steps[0]!.run({ manifest: result, logger: silentLogger, resolve: (f) => store.resolve('s1', f) });
+    await transcribe.run({ manifest: result, logger: silentLogger, resolve: (f) => store.resolve('s1', f) });
     expect(requests).toHaveLength(3);
   });
 });

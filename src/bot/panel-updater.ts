@@ -1,5 +1,8 @@
 import { AttachmentBuilder, type Client } from 'discord.js';
 import type { Logger } from '../logger.js';
+import { loadSummary } from '../pipeline/index.js';
+import type { PipelineListener } from '../pipeline/runner.js';
+import type { SessionStore } from '../sessions/store.js';
 import type { SessionManifest } from '../sessions/manifest.js';
 import { buildPanel, type PanelExtras } from './panel.js';
 
@@ -35,4 +38,19 @@ export class PanelUpdater {
       this.logger.debug('Could not update control panel', { sessionId: manifest.id, error });
     }
   }
+}
+
+/**
+ * Mirrors processing on the panel: progress while it runs, then the summary and the transcript
+ * file once the run ends (the transcript only if transcription succeeded).
+ */
+export function panelProcessingListener(store: SessionStore, panel: Pick<PanelUpdater, 'update'>): PipelineListener {
+  return async (manifest, finished) => {
+    if (!finished) return panel.update(manifest);
+    const transcript = manifest.processing?.transcribe?.status === 'done' ? manifest.transcriptFile : undefined;
+    await panel.update(manifest, {
+      summary: await loadSummary(store, manifest),
+      attachments: transcript ? [{ file: store.resolve(manifest.id, transcript), name: 'transcript.md' }] : undefined,
+    });
+  };
 }

@@ -23,7 +23,7 @@ import { canControlRecording } from './permissions.js';
 
 export interface InteractionDeps {
   manager: SessionManager;
-  pipeline?: Pipeline | undefined;
+  pipeline: Pipeline;
   config: Config;
   logger: Logger;
 }
@@ -116,7 +116,6 @@ async function handleButton(interaction: ButtonInteraction<'cached'>, { manager,
 
   if (parsed.action === 'retry') {
     requireControl(interaction.member, config);
-    if (!pipeline?.enabled) throw new UserError('Processing is turned off (no speech-to-text provider is configured).');
     await interaction.update(buildPanel(await pipeline.retry(parsed.sessionId)));
     return;
   }
@@ -183,22 +182,16 @@ function person(member: GuildMember): Person {
   return { id: member.id, name: member.displayName };
 }
 
-function stopSummary(
-  session: { status: string; durationMs?: number | undefined; tracks: unknown[]; error?: string | undefined },
-  pipeline: Pipeline | undefined,
-): string {
+function stopSummary(session: { durationMs?: number | undefined; tracks: unknown[] }, pipeline: Pipeline): string {
   const duration = session.durationMs !== undefined ? formatDuration(session.durationMs) : 'unknown length';
-  if (session.status === 'failed') {
-    return `⚠️ Recording stopped (${duration}), but saving the mixed audio failed: ${session.error ?? 'unknown error'}. The per-speaker tracks are kept.`;
-  }
-  const speakers = session.tracks.length === 0 ? 'nobody spoke' : `${session.tracks.length} speaker track(s)`;
-  const next =
-    pipeline?.enabled && session.tracks.length > 0
-      ? pipeline.stepNames.includes('summarize')
-        ? ' The transcript and summary will appear on the panel.'
-        : ' The transcript will appear on the panel.'
-      : '';
-  return `⏹️ Recording saved: ${duration}, ${speakers}.${next}`;
+  if (session.tracks.length === 0) return `⏹️ Recording stopped (${duration}). Nobody spoke, so there is no audio.`;
+  const steps = pipeline.stepNames;
+  const results = steps.includes('summarize')
+    ? 'the mixed audio, transcript and summary'
+    : steps.includes('transcribe')
+      ? 'the mixed audio and transcript'
+      : 'the mixed audio';
+  return `⏹️ Recording saved: ${duration}, ${session.tracks.length} speaker track(s). Progress and ${results} will appear on the panel.`;
 }
 
 async function replyEphemeral(interaction: RepliableInteraction, content: string): Promise<void> {

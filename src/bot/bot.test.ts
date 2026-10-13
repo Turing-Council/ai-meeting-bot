@@ -1,10 +1,13 @@
 import { ButtonStyle, PermissionFlagsBits, PermissionsBitField } from 'discord.js';
 import { describe, expect, it } from 'vitest';
+import { silentLogger } from '../logger.js';
 import type { SessionManifest } from '../sessions/manifest.js';
+import { SessionStore } from '../sessions/store.js';
 import { inviteUrl } from './commands.js';
 import { panelCustomId, parsePanelCustomId } from './custom-ids.js';
 import { formatDuration, formatOffset, truncate } from './format.js';
 import { buildPanel } from './panel.js';
+import { panelProcessingListener } from './panel-updater.js';
 import { canControlRecording } from './permissions.js';
 
 const base: SessionManifest = {
@@ -179,5 +182,31 @@ describe('inviteUrl', () => {
     expect(url.searchParams.get('scope')).toBe('bot applications.commands');
     const perms = new PermissionsBitField(BigInt(url.searchParams.get('permissions')!));
     expect(perms.has([PermissionFlagsBits.Connect, PermissionFlagsBits.SendMessages])).toBe(true);
+  });
+});
+
+describe('panelProcessingListener', () => {
+  it('shows progress while running, and attaches the transcript only once transcription is done', async () => {
+    const updates: { finished: boolean; attachments?: unknown }[] = [];
+    let finished = false;
+    const panel = {
+      update: async (_: SessionManifest, update: { attachments?: unknown } = {}) => {
+        updates.push({ finished, attachments: update.attachments });
+      },
+    };
+    const store = new SessionStore('/data/sessions', silentLogger);
+    const listener = panelProcessingListener(store, panel);
+    const session: SessionManifest = { ...base, status: 'recorded', transcriptFile: 'transcript.md' };
+
+    await listener({ ...session, processing: { transcribe: { status: 'running', attempts: 1 } } }, finished);
+    finished = true;
+    await listener({ ...session, processing: { transcribe: { status: 'failed', attempts: 1 } } }, finished);
+    await listener({ ...session, processing: { transcribe: { status: 'done', attempts: 1 } } }, finished);
+
+    expect(updates).toEqual([
+      { finished: false, attachments: undefined },
+      { finished: true, attachments: undefined },
+      { finished: true, attachments: [{ file: `/data/sessions/${base.id}/transcript.md`, name: 'transcript.md' }] },
+    ]);
   });
 });

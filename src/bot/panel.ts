@@ -25,7 +25,7 @@ const MAX_LISTED_SUMMARY_ITEMS = 6;
 /** Summary fields are kept short so the whole embed stays under Discord's 6000-character limit. */
 const SUMMARY_FIELD_MAX = 600;
 
-const STEP_LABEL: Record<StepName, string> = { transcribe: 'Transcript', summarize: 'Summary' };
+const STEP_LABEL: Record<StepName, string> = { mix: 'Audio', transcribe: 'Transcript', summarize: 'Summary' };
 const STEP_ICON: Record<StepStatus, string> = { pending: '🕓', running: '⏳', done: '✅', failed: '⚠️' };
 
 export interface PanelExtras {

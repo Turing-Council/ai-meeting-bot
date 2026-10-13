@@ -2,8 +2,10 @@ import { z } from 'zod';
 
 /**
  * Lifecycle of a recording session on disk:
- *   recording ⇄ paused → finalizing → recorded (ready for processing) | failed
+ *   recording ⇄ paused → finalizing → recorded (tracks saved, ready for processing)
  * A session left in recording/paused/finalizing at boot was interrupted and gets recovered.
+ * `failed` is only found in sessions from before mixing became a processing step (a failed
+ * mixdown); processing treats those as `recorded`.
  */
 export const SessionStatus = z.enum(['recording', 'paused', 'finalizing', 'recorded', 'failed']);
 export type SessionStatus = z.infer<typeof SessionStatus>;
@@ -14,7 +16,7 @@ export const UNFINISHED_STATUSES: readonly SessionStatus[] = ['recording', 'paus
 const Person = z.object({ id: z.string(), name: z.string() });
 
 /** Processing steps that run after a session is `recorded`, in order. */
-export const PIPELINE_STEPS = ['transcribe', 'summarize'] as const;
+export const PIPELINE_STEPS = ['mix', 'transcribe', 'summarize'] as const;
 export type StepName = (typeof PIPELINE_STEPS)[number];
 
 export const StepStatus = z.enum(['pending', 'running', 'done', 'failed']);
@@ -66,10 +68,12 @@ export const SessionManifest = z.object({
   error: z.string().optional(),
 
   /**
-   * State of each processing step (only the steps that are configured). Missing when
-   * processing is off or the session predates it.
+   * State of each processing step (only the steps that are configured). Missing until
+   * processing starts, and in sessions that predate it.
    */
-  processing: z.object({ transcribe: StepState.optional(), summarize: StepState.optional() }).optional(),
+  processing: z
+    .object({ mix: StepState.optional(), transcribe: StepState.optional(), summarize: StepState.optional() })
+    .optional(),
   /** Outputs of the processing steps, relative to the session directory. */
   transcriptFile: z.string().optional(),
   transcriptDataFile: z.string().optional(),

@@ -41,14 +41,17 @@ describe('SessionManager.recoverInterrupted', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  // `true`/`false` stand in for ffmpeg: success or failure without needing it installed.
-  const managerWith = (ffmpegPath: string) =>
-    new SessionManager({
+  let handedOver: string[];
+  const manager = () => {
+    handedOver = [];
+    return new SessionManager({
       client: {} as Client,
       store,
       logger: silentLogger,
-      config: { ffmpegPath, emptyChannelTimeoutMs: 120_000 } as Config,
+      config: { emptyChannelTimeoutMs: 120_000 } as Config,
+      onRecorded: (m) => handedOver.push(m.id),
     });
+  };
 
   async function writeTrack(id: string, userId: string, modifiedAt: Date) {
     const file = store.resolve(id, `tracks/${userId}.ogg`);
@@ -56,7 +59,7 @@ describe('SessionManager.recoverInterrupted', () => {
     await utimes(file, modifiedAt, modifiedAt);
   }
 
-  it('finishes a crashed session: adopts unlisted tracks, closes pauses, mixes', async () => {
+  it('finishes a crashed session (adopts unlisted tracks, closes pauses) and hands it to processing', async () => {
     await store.create(
       manifest('s1', {
         status: 'paused',
@@ -67,16 +70,16 @@ describe('SessionManager.recoverInterrupted', () => {
     await writeTrack('s1', 'u1', new Date('2026-10-13T14:05:00.000Z'));
     await writeTrack('s1', 'u2', new Date('2026-10-13T14:10:00.000Z')); // created right before the crash
 
-    await managerWith('true').recoverInterrupted();
+    await manager().recoverInterrupted();
     const recovered = await store.load('s1');
 
+    expect(handedOver).toEqual(['s1']);
     expect(recovered.status).toBe('recorded');
     expect(recovered.interrupted).toBe(true);
     expect(recovered.tracks.map((t) => t.userId).sort()).toEqual(['u1', 'u2']);
     expect(recovered.endedAt).toBe('2026-10-13T14:10:00.000Z'); // last audio written
     expect(recovered.durationMs).toBe(600_000);
     expect(recovered.pauses).toEqual([{ startMs: 60_000, endMs: 600_000 }]);
-    expect(recovered.mixedFile).toBe('mixed.ogg');
   });
 
   it('keeps the original end time of a session stopped by a graceful shutdown', async () => {
@@ -91,7 +94,7 @@ describe('SessionManager.recoverInterrupted', () => {
     );
     await writeTrack('s1', 'u1', new Date('2026-10-13T14:29:59.000Z'));
 
-    await managerWith('true').recoverInterrupted();
+    await manager().recoverInterrupted();
     const recovered = await store.load('s1');
     expect(recovered.status).toBe('recorded');
     expect(recovered.interrupted).toBeUndefined();
@@ -99,30 +102,20 @@ describe('SessionManager.recoverInterrupted', () => {
     expect(recovered.durationMs).toBe(1_800_000);
   });
 
-  it('marks the session failed but keeps the tracks when mixing fails', async () => {
-    await store.create(manifest('s1', { tracks: [{ userId: 'u1', file: 'tracks/u1.ogg' }] }));
-    await writeTrack('s1', 'u1', new Date('2026-10-13T14:05:00.000Z'));
-
-    await managerWith('false').recoverInterrupted();
-    const recovered = await store.load('s1');
-    expect(recovered.status).toBe('failed');
-    expect(recovered.error).toMatch(/ffmpeg exited with code 1/);
-    expect(recovered.tracks).toHaveLength(1);
-    expect(recovered.mixedFile).toBeUndefined();
-  });
-
-  it('records a session where nobody spoke without mixing', async () => {
+  it('records a session where nobody spoke without processing it', async () => {
     await store.create(manifest('s1'));
-    await managerWith('false').recoverInterrupted(); // would fail if it tried to mix
+    await manager().recoverInterrupted();
     const recovered = await store.load('s1');
     expect(recovered.status).toBe('recorded');
     expect(recovered.durationMs).toBe(0);
+    expect(handedOver).toEqual([]);
   });
 
   it('leaves finished sessions alone', async () => {
     const done = manifest('s1', { status: 'recorded', endedAt: '2026-10-13T15:00:00.000Z', durationMs: 3_600_000 });
     await store.create(done);
-    await managerWith('false').recoverInterrupted();
+    await manager().recoverInterrupted();
     expect(await store.load('s1')).toEqual(done);
+    expect(handedOver).toEqual([]);
   });
 });
