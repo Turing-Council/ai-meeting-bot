@@ -1,8 +1,8 @@
 # Developing
 
 Notes for working on the bot: where the project stands, how it's set up, and what comes next.
-The product spec is in [`REQUIREMENTS.md`](REQUIREMENTS.md). Setup and deploy steps for users
-are in the [README](../README.md).
+The product spec is in [`REQUIREMENTS.md`](REQUIREMENTS.md). Setup, configuration and day-to-day
+use are in [`usage.md`](usage.md).
 
 ## Timeline
 

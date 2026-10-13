@@ -3,7 +3,10 @@
 A Discord bot that joins a voice channel, records the meeting (one track per speaker plus a mix),
 transcribes and summarizes it, and, in a later milestone, logs it to Notion.
 
-Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize**
+**Set it up → [`docs/usage.md`](docs/usage.md)** (quick setup, commands, configuration, providers, troubleshooting)
+
+Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Developer notes: [`docs/developing.md`](docs/developing.md) ·
+Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize**
 
 ## What works now
 
@@ -74,99 +77,17 @@ data/sessions/<session-id>/
   work/                # per-chunk caches
 ```
 
-### Choosing providers
+Providers, configuration, deployment and reprocessing are covered in
+[`docs/usage.md`](docs/usage.md).
 
-Both settings take any OpenAI-compatible endpoint (`STT_BASE_URL`, `LLM_BASE_URL`):
-
-- **Speech-to-text** (`POST /audio/transcriptions`): a hosted Whisper-style API, or a
-  self-hosted server such as faster-whisper or whisper.cpp running next to the bot in Dokploy.
-  Use `STT_RESPONSE_FORMAT=json` for models that don't return segment timestamps.
-- **LLM** (`POST /chat/completions`): a hosted model, an LLM router, or a self-hosted server
-  (Ollama, vLLM, LM Studio, llama.cpp). Set `LLM_JSON_MODE=none` if the server rejects
-  `response_format`.
-
-Without `STT_PROVIDER`, the bot only records (as in M1). Without `LLM_PROVIDER`, it transcribes
-but doesn't summarize. `mock` runs everything offline with placeholder text, which is handy for
-testing the flow on Discord without paying for API calls.
-
-## Discord setup (once)
-
-1. Create an application at <https://discord.com/developers/applications>.
-2. **Bot** tab → *Reset Token* → copy it to `DISCORD_TOKEN`.
-   No privileged intents are needed for this milestone.
-3. **General Information** → copy *Application ID* to `DISCORD_CLIENT_ID`.
-4. Run `npm run register` (below). It registers the slash commands and prints an invite link
-   with the right permissions (View Channels, Send Messages, Embed Links, Read Message History,
-   Connect, Change Nickname). Open it to add the bot to your server.
-
-## Configuration
-
-Copy `.env.example` to `.env` and fill it in.
-
-| Variable | Required | Default | Notes |
-|---|---|---|---|
-| `DISCORD_TOKEN` | ✅ | | Bot token |
-| `DISCORD_CLIENT_ID` | ✅ | | Application ID |
-| `DISCORD_GUILD_ID` | | | Register commands in this server only (instant). Empty = global |
-| `DATA_DIR` | | `./data` | Where recordings are stored (`/app/data` in Docker) |
-| `EMPTY_CHANNEL_TIMEOUT_MIN` | | `2` | Leave after the channel is empty this long |
-| `RECORDER_ROLE_ID` | | | If set, only this role (or Manage Server) can start/stop/pause |
-| `FFMPEG_PATH` | | `ffmpeg` | ffmpeg binary used for the mixdown |
-| `STT_PROVIDER` | | `none` | `none` · `mock` · `openai-compatible` |
-| `STT_BASE_URL` | for `openai-compatible` | | e.g. `http://whisper:8000/v1` |
-| `STT_API_KEY` | | | Empty for servers without auth |
-| `STT_MODEL` | for `openai-compatible` | | Model name as the server expects it |
-| `STT_LANGUAGE` | | `en` | Spoken language (ISO 639-1) |
-| `STT_RESPONSE_FORMAT` | | `verbose_json` | `json` for models without segment timestamps |
-| `LLM_PROVIDER` | | `none` | `none` · `mock` · `openai-compatible` |
-| `LLM_BASE_URL` | for `openai-compatible` | | e.g. `http://ollama:11434/v1` |
-| `LLM_API_KEY` | | | Empty for servers without auth |
-| `LLM_MODEL` | for `openai-compatible` | | Model name as the server expects it |
-| `LLM_JSON_MODE` | | `json_object` | `none` if the server rejects `response_format` |
-| `LLM_TEMPERATURE` | | model default | Some models only accept their default |
-| `LLM_CHUNK_CHARS` | | `48000` | Transcript characters per call; longer meetings are split |
-| `LOG_LEVEL` | | `info` | `debug` · `info` · `warn` · `error` |
-| `TZ` | | system | Time zone for default meeting titles, e.g. `Europe/Rome` |
-
-## Run locally
-
-Requires Node.js ≥ 22.12 and ffmpeg (`brew install ffmpeg`). Without ffmpeg, recording still
-works, but the mix and transcribe steps fail (and can be retried once ffmpeg is there).
+## Development
 
 ```bash
 npm install
-cp .env.example .env   # fill in DISCORD_TOKEN, DISCORD_CLIENT_ID, DISCORD_GUILD_ID
-npm run register       # once, and again whenever commands change
-npm run dev            # starts with reload on change
+cp .env.example .env   # see docs/usage.md for the variables
+npm run register       # register slash commands, print the invite link
+npm run dev            # run with reload on change
 ```
-
-## Deploy on Dokploy
-
-1. **Create Application** → connect this Git repository → *Build Type*: **Dockerfile**.
-2. **Environment**: set the variables above (`DATA_DIR` is already `/app/data` in the image).
-3. **Advanced → Volumes/Mounts**: add a **volume** mounted at `/app/data`.
-   Without it, recordings are lost on every redeploy.
-4. **Deploy.** Logs are JSON lines, one per event.
-5. Register commands once from the app's terminal: `node dist/scripts/register-commands.js`
-   (or run `npm run register` from your machine with the same env).
-
-On redeploy, Docker sends `SIGTERM`. The bot closes all audio files and leaves voice, and the
-new container mixes any interrupted session when it starts, then resumes any processing job that
-was running.
-
-### Reprocessing a session
-
-To run processing by hand (e.g. after changing providers, or for a meeting recorded before
-processing was enabled), use the app's terminal:
-
-```bash
-node dist/scripts/process-session.js --list               # sessions and their processing state
-node dist/scripts/process-session.js <session-id>         # resume, retrying failed steps
-node dist/scripts/process-session.js <session-id> --force # start over, ignoring caches
-```
-
-Locally: `npm run process -- <session-id>`. If the bot is processing that session at the same
-time, the script stops and says so (and vice versa).
 
 ## Tests
 
