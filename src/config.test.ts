@@ -21,6 +21,8 @@ describe('loadConfig', () => {
       logLevel: 'info',
       stt: { provider: 'none' },
       llm: { provider: 'none' },
+      notionToken: undefined,
+      collectChatMaterials: false,
     });
   });
 
@@ -80,6 +82,13 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ DISCORD_TOKEN: 't', DISCORD_CLIENT_ID: 'c', STT_PROVIDER: 'openai-compatible', STT_BASE_URL: 'nope' })).toThrow(
       /STT_BASE_URL: must be a URL/,
     );
+  });
+
+  it('reads the Notion token and the materials flag', () => {
+    const config = loadConfig({ DISCORD_TOKEN: 't', DISCORD_CLIENT_ID: 'c', NOTION_TOKEN: 'ntn_x', COLLECT_CHAT_MATERIALS: 'TRUE' });
+    expect(config.notionToken).toBe('ntn_x');
+    expect(config.collectChatMaterials).toBe(true);
+    expect(() => loadConfig({ DISCORD_TOKEN: 't', DISCORD_CLIENT_ID: 'c', COLLECT_CHAT_MATERIALS: 'maybe' })).toThrow(/COLLECT_CHAT_MATERIALS/);
   });
 
   it('does not require Discord settings for offline scripts', () => {

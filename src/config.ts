@@ -7,6 +7,10 @@ const optionalUrl = z.preprocess(emptyToUndefined, z.url({ error: 'must be a URL
 const withDefault = <T extends z.ZodType>(schema: T, value: z.input<T>) => z.preprocess(emptyToUndefined, schema.default(value as never));
 
 const requiredString = z.string({ error: 'is required' }).min(1, 'is required');
+const booleanFlag = z.preprocess(
+  (value) => (typeof value === 'string' ? value.trim().toLowerCase() : value),
+  z.enum(['true', 'false', '1', '0', 'yes', 'no', '']).optional().transform((v) => v === 'true' || v === '1' || v === 'yes'),
+);
 
 const BaseSchema = z.object({
   DATA_DIR: withDefault(z.string(), './data'),
@@ -29,6 +33,9 @@ const BaseSchema = z.object({
   LLM_JSON_MODE: withDefault(z.enum(['json_object', 'none']), 'json_object'),
   LLM_TEMPERATURE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(2).optional()),
   LLM_CHUNK_CHARS: withDefault(z.coerce.number().int().min(2000), 48_000),
+
+  NOTION_TOKEN: optionalString,
+  COLLECT_CHAT_MATERIALS: booleanFlag,
 });
 
 const DiscordSchema = z.object({
@@ -74,6 +81,10 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   stt: SttConfig;
   llm: LlmConfig;
+  /** Notion integration secret; Notion features are off without it. */
+  notionToken: string | undefined;
+  /** Save files and links posted in the voice channel's chat (needs the Message Content intent). */
+  collectChatMaterials: boolean;
 }
 
 export interface LoadConfigOptions {
@@ -136,5 +147,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: LoadCo
         : c.LLM_PROVIDER === 'mock'
           ? { provider: 'mock', chunkChars: c.LLM_CHUNK_CHARS }
           : { provider: 'none' },
+    notionToken: c.NOTION_TOKEN,
+    collectChatMaterials: c.COLLECT_CHAT_MATERIALS,
   };
 }
