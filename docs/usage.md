@@ -25,14 +25,16 @@ You need: a Discord server where you can manage the server, and a VPS with
    3. *Advanced → Volumes/Mounts*: add a **volume** mounted at `/app/data`. Without it, every
       redeploy deletes your recordings.
    4. **Deploy**.
-4. **Register the slash commands.** In the app's *Terminal* in Dokploy, run:
+4. **Get the invite link.** In the app's *Terminal* in Dokploy, run:
    ```bash
    node dist/scripts/register-commands.js
    ```
-   It prints an **invite link**.
+   It prints an **invite link** first. If it then fails with `Missing Access`, that's expected
+   until the bot is in your server: continue with step 5, then run the command again.
 5. **Invite the bot.** Open the link and pick your server. The bot asks for the permissions it
    needs: View Channels, Send Messages, Embed Links, Attach Files, Read Message History,
-   Connect, Change Nickname.
+   Connect, Change Nickname. Then run the command from step 4 again: it should now print
+   `Registered … command(s)`.
 6. **Record a meeting.** Join a voice channel and run `/meeting start`. Talk, then run
    `/meeting stop`. The recording is saved and the panel in the channel's chat shows the result.
 7. **Optional: transcripts and summaries.** To try the whole flow for free, add
@@ -306,6 +308,7 @@ Logs are in Dokploy (*Logs* tab), one JSON line per event. Set `LOG_LEVEL=debug`
 
 | Problem | What to check |
 |---|---|
+| `Missing Access` when registering commands | The bot isn't in the server yet (or was invited without the `applications.commands` scope). Invite it with the link the command prints, check `DISCORD_CLIENT_ID` matches the token's app and `DISCORD_GUILD_ID` is the right server, then run it again |
 | Slash commands don't appear | Run the register command again. Without `DISCORD_GUILD_ID`, commands can take up to an hour to appear |
 | "I couldn't connect to the voice channel" | The bot needs *View Channel* and *Connect* in that channel (check channel-specific permissions) |
 | The bot joins but tracks are empty | Make sure the bot isn't server-deafened. Keep the bot updated: Discord's voice encryption changes occasionally |

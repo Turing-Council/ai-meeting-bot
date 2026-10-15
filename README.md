@@ -91,7 +91,7 @@ Providers, configuration, deployment and reprocessing are covered in
 ```bash
 npm install
 cp .env.example .env   # see docs/usage.md for the variables
-npm run register       # register slash commands, print the invite link
+npm run register       # print the invite link, register slash commands
 npm run dev            # run with reload on change
 ```
 

@@ -126,7 +126,7 @@ SessionManager ── start/pause/stop ────────────┘  
 | `src/notion/publisher.ts` | Page at start, status sync, final properties |
 | `src/pipeline/publish-step.ts` | The `publish` step: uploads, body, action items, with checkpoints |
 | `src/sessions/materials.ts` | Links and attachments from chat messages; size-capped downloads |
-| `src/scripts/register-commands.ts` | Registers slash commands and prints the invite link |
+| `src/scripts/register-commands.ts` | Prints the invite link, then registers slash commands |
 | `src/scripts/process-session.ts` | Runs the pipeline on one session without Discord (`--list`, `--force`) |
 | `src/scripts/notion-setup.ts` | Same as `/meeting setup`, from the command line |
 | `src/test-utils/` | Independent Ogg parser, a fake HTTP server and an in-memory fake Notion, used by the tests (not built into `dist`) |

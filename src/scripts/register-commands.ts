@@ -10,6 +10,9 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const rest = new REST().setToken(config.discordToken);
 
+  // Printed first: guild registration fails with "Missing Access" until the bot is in the server.
+  console.log(`Invite the bot with:\n${inviteUrl(config.discordClientId)}\n`);
+
   const route = config.discordGuildId
     ? Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId)
     : Routes.applicationCommands(config.discordClientId);
@@ -20,10 +23,15 @@ async function main(): Promise<void> {
       ? `Registered ${commands.length} command(s) in server ${config.discordGuildId}.`
       : `Registered ${commands.length} global command(s).`,
   );
-  console.log(`Invite the bot with:\n${inviteUrl(config.discordClientId)}`);
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
+  if (message.includes('Missing Access')) {
+    console.error(
+      'Invite the bot to the server with the link above (it needs the applications.commands scope), then run this again.',
+    );
+  }
   process.exit(1);
 });
