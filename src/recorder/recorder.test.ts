@@ -75,6 +75,28 @@ describe('MeetingRecorder', () => {
     return { recorder, speakers };
   }
 
+  it('hands every received packet to onPacket, except while paused', async () => {
+    const fake = fakeReceiver();
+    const seen: string[] = [];
+    const { recorder } = create(fake, { onPacket: (userId, packet, atMs) => seen.push(`${userId}:${packet[1]}@${atMs}`) });
+    recorder.start();
+
+    clock = START + 1000;
+    fake.speak('alice');
+    fake.send('alice', voice(1));
+    await tick();
+    recorder.setPaused(true);
+    fake.send('alice', voice(2));
+    await tick();
+    recorder.setPaused(false);
+    clock = START + 2000;
+    fake.send('alice', voice(3));
+    await tick();
+    await recorder.stop(START + 3000);
+
+    expect(seen).toEqual([`alice:1@${START + 1000}`, `alice:3@${START + 2000}`]);
+  });
+
   it('writes one aligned Ogg file per speaker', async () => {
     const fake = fakeReceiver();
     const { recorder, speakers } = create(fake);

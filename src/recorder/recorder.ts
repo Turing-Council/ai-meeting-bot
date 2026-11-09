@@ -19,6 +19,8 @@ export interface RecorderOptions {
   shouldRecord?: (userId: string) => boolean;
   /** Called the first time a user's audio arrives. */
   onNewSpeaker?: (userId: string, relativeFile: string) => void;
+  /** Called with every recorded Opus packet and its arrival time (wall clock, ms). Not called while paused. */
+  onPacket?: (userId: string, packet: Buffer, atMs: number) => void;
   now?: () => number;
 }
 
@@ -40,6 +42,7 @@ export class MeetingRecorder {
   private readonly logger: Logger;
   private readonly shouldRecord: (userId: string) => boolean;
   private readonly onNewSpeaker: ((userId: string, relativeFile: string) => void) | undefined;
+  private readonly onPacket: ((userId: string, packet: Buffer, atMs: number) => void) | undefined;
   private readonly now: () => number;
 
   private readonly speakers = new Map<string, SpeakerTrack>();
@@ -55,6 +58,7 @@ export class MeetingRecorder {
     this.logger = options.logger;
     this.shouldRecord = options.shouldRecord ?? (() => true);
     this.onNewSpeaker = options.onNewSpeaker;
+    this.onPacket = options.onPacket;
     this.now = options.now ?? Date.now;
   }
 
@@ -113,6 +117,12 @@ export class MeetingRecorder {
         speaker.track.pushPacket(packet);
       } catch (error) {
         this.logger.error('Failed to write audio packet', { userId, error });
+      }
+      // After the write: a failure in live transcription must never cost the recording.
+      try {
+        this.onPacket?.(userId, packet, this.now());
+      } catch (error) {
+        this.logger.error('Live packet handler failed', { userId, error });
       }
     });
     stream.once('error', (error) => this.logger.warn('Audio stream error; will resubscribe', { userId, error }));
