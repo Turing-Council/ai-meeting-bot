@@ -13,6 +13,7 @@ export interface OpenAiCompatibleSttOptions {
   /** `verbose_json` gives per-segment timestamps; some models only support `json`. */
   responseFormat: 'verbose_json' | 'json';
   timeoutMs?: number;
+  attempts?: number;
   backoffMs?: number;
 }
 
@@ -42,11 +43,12 @@ export class OpenAiCompatibleSttProvider implements SttProvider {
 
   async transcribe(request: TranscribeRequest): Promise<SttSegment[]> {
     const { baseUrl, apiKey, model, language, responseFormat } = this.options;
-    const audio = await openAsBlob(request.file, { type: 'audio/ogg' });
+    const audio = request.audio ?? (await openAsBlob(request.file, { type: 'audio/ogg' }));
 
     const raw = await postJson(joinUrl(baseUrl, 'audio/transcriptions'), {
       headers: authHeaders(apiKey),
       timeoutMs: this.options.timeoutMs,
+      attempts: this.options.attempts,
       backoffMs: this.options.backoffMs,
       body: () => {
         const form = new FormData();

@@ -36,6 +36,12 @@ const BaseSchema = z.object({
 
   NOTION_TOKEN: optionalString,
   COLLECT_CHAT_MATERIALS: booleanFlag,
+
+  LIVE_TRANSCRIPTION: booleanFlag,
+  LIVE_STT_MODEL: optionalString,
+  LIVE_SILENCE_MS: withDefault(z.coerce.number().int().min(200), 800),
+  LIVE_MAX_UTTERANCE_S: withDefault(z.coerce.number().min(3), 20),
+  LIVE_CONCURRENCY: withDefault(z.coerce.number().int().min(1), 2),
 });
 
 const DiscordSchema = z.object({
@@ -54,7 +60,19 @@ export type SttConfig =
       model: string;
       language: string;
       responseFormat: 'verbose_json' | 'json';
+      timeoutMs?: number;
+      attempts?: number;
     };
+
+/** Live transcription: speech is sent to the STT server utterance by utterance while the meeting runs. */
+export interface LiveConfig {
+  stt: SttConfig;
+  /** A speaker's pause this long ends an utterance. */
+  silenceMs: number;
+  maxUtteranceMs: number;
+  /** Parallel requests to the STT server. */
+  concurrency: number;
+}
 
 export type LlmConfig =
   | { provider: 'none' }
@@ -85,6 +103,8 @@ export interface Config {
   notionToken: string | undefined;
   /** Save files and links posted in the voice channel's chat (needs the Message Content intent). */
   collectChatMaterials: boolean;
+  /** Undefined when live transcription is off. */
+  live: LiveConfig | undefined;
 }
 
 export interface LoadConfigOptions {
@@ -106,11 +126,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: LoadCo
       if (!c[`${prefix}_MODEL`]) issues.push(`${prefix}_MODEL: is required when ${prefix}_PROVIDER=openai-compatible`);
     }
   }
+  if (parsed.success && parsed.data.LIVE_TRANSCRIPTION && parsed.data.STT_PROVIDER === 'none') {
+    issues.push('LIVE_TRANSCRIPTION: needs STT_PROVIDER to be set (not none)');
+  }
   if (!parsed.success || issues.length > 0) {
     throw new Error(`Invalid configuration:\n${issues.map((issue) => `  - ${issue}`).join('\n')}`);
   }
 
   const c = parsed.data;
+  const stt: SttConfig =
+    c.STT_PROVIDER === 'openai-compatible'
+      ? {
+          provider: 'openai-compatible',
+          baseUrl: c.STT_BASE_URL ?? '',
+          apiKey: c.STT_API_KEY,
+          model: c.STT_MODEL ?? '',
+          language: c.STT_LANGUAGE,
+          responseFormat: c.STT_RESPONSE_FORMAT,
+        }
+      : c.STT_PROVIDER === 'mock'
+        ? { provider: 'mock', language: c.STT_LANGUAGE }
+        : { provider: 'none' };
+
   return {
     discordToken: c.DISCORD_TOKEN ?? '',
     discordClientId: c.DISCORD_CLIENT_ID ?? '',
@@ -120,19 +157,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: LoadCo
     recorderRoleId: c.RECORDER_ROLE_ID,
     ffmpegPath: c.FFMPEG_PATH,
     logLevel: c.LOG_LEVEL,
-    stt:
-      c.STT_PROVIDER === 'openai-compatible'
-        ? {
-            provider: 'openai-compatible',
-            baseUrl: c.STT_BASE_URL ?? '',
-            apiKey: c.STT_API_KEY,
-            model: c.STT_MODEL ?? '',
-            language: c.STT_LANGUAGE,
-            responseFormat: c.STT_RESPONSE_FORMAT,
-          }
-        : c.STT_PROVIDER === 'mock'
-          ? { provider: 'mock', language: c.STT_LANGUAGE }
-          : { provider: 'none' },
+    stt,
     llm:
       c.LLM_PROVIDER === 'openai-compatible'
         ? {
@@ -149,5 +174,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: LoadCo
           : { provider: 'none' },
     notionToken: c.NOTION_TOKEN,
     collectChatMaterials: c.COLLECT_CHAT_MATERIALS,
+    live: c.LIVE_TRANSCRIPTION
+      ? {
+          stt: liveStt(stt, c.LIVE_STT_MODEL),
+          silenceMs: c.LIVE_SILENCE_MS,
+          maxUtteranceMs: c.LIVE_MAX_UTTERANCE_S * 1000,
+          concurrency: c.LIVE_CONCURRENCY,
+        }
+      : undefined,
   };
+}
+
+/** A stalled server must not block the live queue for minutes, so live requests fail fast. */
+function liveStt(stt: SttConfig, model: string | undefined): SttConfig {
+  return stt.provider === 'openai-compatible' ? { ...stt, model: model ?? stt.model, timeoutMs: 15_000, attempts: 2 } : stt;
 }

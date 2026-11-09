@@ -86,7 +86,7 @@ export function transcribeStep({ stt, ffmpegPath, concurrency = 3 }: TranscribeS
 }
 
 /** Helps the speech model spell names and topic words. Kept short: Whisper reads only ~200 tokens. */
-function sttPrompt(manifest: SessionManifest): string {
+export function sttPrompt(manifest: SessionManifest): string {
   const names = manifest.participants.map((p) => p.name).join(', ');
   return `Meeting: ${manifest.title}.${names ? ` Participants: ${names}.` : ''}`.slice(0, 500);
 }

@@ -6,8 +6,10 @@ export interface SttSegment {
 }
 
 export interface TranscribeRequest {
-  /** Path of a short audio file (one speaker, one stretch of speech). */
+  /** Path of a short audio file (one speaker, one stretch of speech). With `audio`, only its name is used. */
   file: string;
+  /** The audio itself, when it only exists in memory (live transcription). */
+  audio?: Blob | undefined;
   durationMs: number;
   /** Vocabulary hint, e.g. the meeting title and participant names. */
   prompt?: string | undefined;

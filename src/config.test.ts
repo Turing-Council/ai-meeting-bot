@@ -23,6 +23,7 @@ describe('loadConfig', () => {
       llm: { provider: 'none' },
       notionToken: undefined,
       collectChatMaterials: false,
+      live: undefined,
     });
   });
 
@@ -95,5 +96,29 @@ describe('loadConfig', () => {
     const config = loadConfig({ STT_PROVIDER: 'mock' }, { requireDiscord: false });
     expect(config.discordToken).toBe('');
     expect(config.stt).toEqual({ provider: 'mock', language: 'en' });
+  });
+
+  describe('live transcription', () => {
+    const base = { DISCORD_TOKEN: 't', DISCORD_CLIENT_ID: 'c' };
+    const whisper = { STT_PROVIDER: 'openai-compatible', STT_BASE_URL: 'http://whisper:8000/v1', STT_MODEL: 'big' };
+
+    it('is off by default', () => {
+      expect(loadConfig({ ...base, ...whisper }).live).toBeUndefined();
+    });
+
+    it('needs an STT provider', () => {
+      expect(() => loadConfig({ ...base, LIVE_TRANSCRIPTION: 'true' })).toThrow(/LIVE_TRANSCRIPTION/);
+    });
+
+    it('uses the STT server with fast-failing requests, and LIVE_STT_MODEL overrides the model', () => {
+      const { live, stt } = loadConfig({ ...base, ...whisper, LIVE_TRANSCRIPTION: 'true', LIVE_STT_MODEL: 'small', LIVE_MAX_UTTERANCE_S: '10' });
+      expect(stt).toMatchObject({ model: 'big' });
+      expect(live).toEqual({
+        stt: expect.objectContaining({ provider: 'openai-compatible', model: 'small', timeoutMs: 15_000, attempts: 2 }),
+        silenceMs: 800,
+        maxUtteranceMs: 10_000,
+        concurrency: 2,
+      });
+    });
   });
 });
