@@ -53,6 +53,13 @@ closed, private use, so compliance is out of scope.
   is idempotent, retries on failure, and can resume after a restart. Progress shows in the Notion
   `Status` property and on the Discord control panel.
 
+## Live transcription (optional, off by default)
+- **RL.1 Live lines.** With `LIVE_TRANSCRIPTION=true`, each utterance (a speaker's speech up to a
+  pause) is sent to the STT provider as soon as it ends, and the text is shown in the voice
+  channel's chat in one message that is edited every few seconds.
+- **RL.2 Never costs the recording.** Failures or a slow STT server only skip live lines; the
+  recording and the post-meeting transcript are unaffected.
+
 ## Tier 2 — Full Notion mapping
 - **R2.1 Meetings database** properties:
   - Title

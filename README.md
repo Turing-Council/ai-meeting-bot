@@ -32,6 +32,11 @@ Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize, M3 Notion**
 
 > **One recording per server.** Discord lets a bot be in only one voice channel per server.
 
+## Live transcription (optional)
+
+With `LIVE_TRANSCRIPTION=true` the bot also shows a live transcript in the voice channel's chat
+while recording. See [docs/usage.md](docs/usage.md#live-transcription).
+
 ## How recording works
 
 Discord sends each speaker's audio as a separate stream of Opus packets, only while they talk.

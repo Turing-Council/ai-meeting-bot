@@ -153,6 +153,16 @@ Set these as environment variables (Dokploy *Environment*, or `.env` locally; se
 | `STT_LANGUAGE` | | `en` | Language spoken in meetings (ISO 639-1) |
 | `STT_RESPONSE_FORMAT` | | `verbose_json` | Use `json` if the model doesn't support `verbose_json` |
 
+**Live transcription**
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `LIVE_TRANSCRIPTION` | | `false` | `true` posts a live transcript in the voice channel's chat while recording. Needs `STT_PROVIDER` |
+| `LIVE_STT_MODEL` | | `STT_MODEL` | A smaller, faster model for live only. The transcript after the meeting still uses `STT_MODEL` |
+| `LIVE_SILENCE_MS` | | `800` | A speaker's pause this long ends a line |
+| `LIVE_MAX_UTTERANCE_S` | | `20` | Longer monologues are cut after this many seconds |
+| `LIVE_CONCURRENCY` | | `2` | Parallel requests to the STT server |
+
 **Summaries**
 
 | Variable | Required | Default | Notes |
@@ -215,6 +225,22 @@ Tips:
 - If the LLM server returns an error about `response_format`, set `LLM_JSON_MODE=none`.
 - Smaller local models may return summaries that don't match the expected format. The bot asks
   once more and otherwise marks the step as failed, so you can switch models and press Retry.
+
+## Live transcription
+
+With `LIVE_TRANSCRIPTION=true` the bot posts one message in the voice channel's chat and edits it
+every few seconds with the latest lines (`[00:12] Alice: …`). A line appears about a second or
+two after a speaker pauses, depending on the server. Everyone who can read that chat sees it, so
+tell participants. The lines are also saved to `live-transcript.jsonl` in the session folder.
+
+It is meant for following along: lines can be slightly out of order when people talk over each
+other, and a very busy server skips lines that waited more than 30 s. The transcript produced
+after the meeting (the one used for the summary and Notion) is separate and more accurate.
+
+Speed depends on the speech server. A CPU-only Whisper server needs a small English model
+(for example `small.en`); set `LIVE_STT_MODEL` if `STT_MODEL` is a bigger one. If the CPU is in a
+virtual machine, make sure the VM exposes AVX2 (Proxmox: CPU type `host` or `x86-64-v3`),
+otherwise it is much slower.
 
 ## Notion
 

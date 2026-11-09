@@ -131,6 +131,16 @@ SessionManager ── start/pause/stop ────────────┘  
 | `src/scripts/notion-setup.ts` | Same as `/meeting setup`, from the command line |
 | `src/test-utils/` | Independent Ogg parser, a fake HTTP server and an in-memory fake Notion, used by the tests (not built into `dist`) |
 
+### Live transcription
+
+`src/live/`: `segmenter.ts` splits each speaker's packets into utterances (Discord only sends
+audio while someone talks, so a gap in the packets is a pause, no VAD), `encode.ts` wraps an
+utterance's Opus packets in an in-memory Ogg file, `transcription.ts` sends them to the STT
+provider through a bounded queue (stale items are dropped), and `message.ts` shows the lines in
+one debounced Discord message. `MeetingRecorder` feeds it through `onPacket`; `SessionManager`
+owns the lifecycle (start, drain on stop, drop on shutdown). Everything is best effort and
+isolated from recording.
+
 ### Key design decisions
 
 - **Time alignment without decoding.** Discord only sends packets while someone talks. Each
