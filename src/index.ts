@@ -8,6 +8,7 @@ import { loadConfig } from './config.js';
 import { createLogger } from './logger.js';
 import { createNotion } from './notion/index.js';
 import { createPipeline } from './pipeline/index.js';
+import { createSttProvider } from './stt/index.js';
 import { runFfmpeg } from './recorder/mixdown.js';
 import { SessionManager } from './sessions/manager.js';
 import { SessionStore } from './sessions/store.js';
@@ -47,7 +48,7 @@ async function main(): Promise<void> {
       await Promise.all([showOnPanel(manifest, finished), showInNotion?.(manifest, finished)]);
     },
   });
-  logger.info('Processing', { steps: pipeline.stepNames, stt: config.stt.provider, llm: config.llm.provider });
+  logger.info('Processing', { steps: pipeline.stepNames, stt: config.stt.provider, live: Boolean(config.live), llm: config.llm.provider });
 
   const manager = new SessionManager({
     client,
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
     config,
     logger,
     panel,
+    liveStt: config.live && createSttProvider(config.live.stt),
     onStarted: (manifest) => void notion?.publisher.startMeeting(manifest, (page) => manager.attachNotionPage(manifest.id, page)),
     onRecorded: (manifest) => void pipeline.enqueue(manifest.id),
   });

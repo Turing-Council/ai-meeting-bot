@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   entersState,
@@ -13,7 +13,11 @@ import { truncate } from '../bot/format.js';
 import type { Config } from '../config.js';
 import { UserError } from '../errors.js';
 import type { Logger } from '../logger.js';
+import { LiveMessage } from '../live/message.js';
+import { LiveTranscription } from '../live/transcription.js';
+import { sttPrompt } from '../pipeline/transcribe-step.js';
 import { MeetingRecorder } from '../recorder/recorder.js';
+import type { SttProvider } from '../stt/index.js';
 import { createSessionId, UNFINISHED_STATUSES, type Person, type SessionManifest } from './manifest.js';
 import { downloadFile, materialsFromMessage } from './materials.js';
 import type { SessionStore } from './store.js';
@@ -24,12 +28,16 @@ const CONNECT_TIMEOUT_MS = 20_000;
 const RECONNECT_GRACE_MS = 5_000;
 const PANEL_REFRESH_DEBOUNCE_MS = 3_000;
 const RECORDING_NICK_PREFIX = '🔴 ';
+const LIVE_TRANSCRIPT_FILE = 'live-transcript.jsonl';
+/** How long a stop waits for the last live lines. */
+const LIVE_DRAIN_MS = 10_000;
 
 interface ActiveSession {
   manifest: SessionManifest;
   guild: Guild;
   connection: VoiceConnection;
   recorder: MeetingRecorder;
+  live?: { transcription: LiveTranscription; message: LiveMessage };
   startMs: number;
   emptyTimer?: NodeJS.Timeout;
   panelTimer?: NodeJS.Timeout;
@@ -56,6 +64,8 @@ export interface SessionManagerDeps {
   config: Config;
   logger: Logger;
   panel?: PanelUpdater;
+  /** Speech-to-text for live transcription; used when `config.live` is set. */
+  liveStt?: SttProvider;
   /** Called once a recording has started (e.g. to create its Notion page). */
   onStarted?: (manifest: SessionManifest) => void;
   /** Called when a session's audio is saved and ready for processing (after a stop or a recovery). */
@@ -76,6 +86,7 @@ export class SessionManager {
   private readonly config: Config;
   private readonly logger: Logger;
   private readonly panel: PanelUpdater;
+  private readonly liveStt: SttProvider | undefined;
   private readonly onStarted: ((manifest: SessionManifest) => void) | undefined;
   private readonly onRecorded: ((manifest: SessionManifest) => void) | undefined;
   private readonly now: () => number;
@@ -90,6 +101,7 @@ export class SessionManager {
     this.config = deps.config;
     this.logger = deps.logger;
     this.panel = deps.panel ?? new PanelUpdater(deps.client, deps.logger);
+    this.liveStt = deps.liveStt;
     this.onStarted = deps.onStarted;
     this.onRecorded = deps.onRecorded;
     this.now = deps.now ?? Date.now;
@@ -182,6 +194,7 @@ export class SessionManager {
       startMs,
       saveChain: Promise.resolve(),
       downloads: new Set(),
+      live: this.createLive(manifest),
       recorder: new MeetingRecorder({
         receiver: connection.receiver,
         sessionDir: this.store.sessionDir(id),
@@ -189,6 +202,7 @@ export class SessionManager {
         logger: log,
         now: this.now,
         shouldRecord: (userId) => !this.client.users.cache.get(userId)?.bot,
+        onPacket: (userId, packet, atMs) => session.live?.transcription.push(userId, packet, atMs - startMs),
         onNewSpeaker: (userId, file) => {
           manifest.tracks.push({ userId, file });
           void this.ensureParticipant(session, userId).then(() => this.persist(session));
@@ -200,6 +214,7 @@ export class SessionManager {
     this.watchConnection(session);
 
     await this.postPanel(session, options.fallbackPanelChannel);
+    await this.postLive(session);
     await this.persist(session);
     await this.setRecordingNickname(guild, true);
     this.updateEmptyTimer(session);
@@ -395,6 +410,7 @@ export class SessionManager {
           durationMs: endMs - session.startMs,
         } satisfies Partial<SessionManifest>);
         await session.recorder.stop(endMs);
+        await this.stopLive(session, 0);
         this.destroyConnection(session);
         await this.persist(session);
         await this.setRecordingNickname(session.guild, false);
@@ -423,6 +439,7 @@ export class SessionManager {
 
     try {
       await session.recorder.stop(endMs);
+      await this.stopLive(session, LIVE_DRAIN_MS);
     } finally {
       this.destroyConnection(session);
       this.active.delete(session.guild.id);
@@ -550,6 +567,41 @@ export class SessionManager {
         this.logger.warn('Could not post control panel', { channelId: channel.id, error });
       }
     }
+  }
+
+  private createLive(manifest: SessionManifest): ActiveSession['live'] {
+    const { live } = this.config;
+    if (!live || !this.liveStt) return undefined;
+    const log = this.logger.child({ sessionId: manifest.id });
+    const message = new LiveMessage(log);
+    const file = path.join(this.store.sessionDir(manifest.id), LIVE_TRANSCRIPT_FILE);
+    const transcription = new LiveTranscription({
+      stt: this.liveStt,
+      silenceMs: live.silenceMs,
+      maxUtteranceMs: live.maxUtteranceMs,
+      concurrency: live.concurrency,
+      prompt: () => sttPrompt(manifest),
+      speakerName: (userId) => manifest.participants.find((p) => p.id === userId)?.name ?? userId,
+      onLine: (line) => {
+        message.add(line);
+        void appendFile(file, `${JSON.stringify(line)}\n`).catch((error: unknown) => log.warn('Could not save a live line', { error }));
+      },
+      logger: log,
+    });
+    return { transcription, message };
+  }
+
+  /** Shows the live transcript in the same chat as the control panel. */
+  private async postLive(session: ActiveSession): Promise<void> {
+    const channelId = session.manifest.panelChannelId;
+    const channel = channelId ? session.guild.channels.cache.get(channelId) : undefined;
+    if (session.live && channel?.isSendable()) await session.live.message.attach(channel);
+  }
+
+  private async stopLive(session: ActiveSession, drainMs: number): Promise<void> {
+    if (!session.live) return;
+    await session.live.transcription.stop(drainMs);
+    await session.live.message.finish();
   }
 
   private schedulePanelRefresh(session: ActiveSession): void {
