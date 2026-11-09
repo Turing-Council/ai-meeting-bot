@@ -160,7 +160,8 @@ Set these as environment variables (Dokploy *Environment*, or `.env` locally; se
 | `LIVE_TRANSCRIPTION` | | `false` | `true` posts a live transcript in the voice channel's chat while recording. Needs `STT_PROVIDER` |
 | `LIVE_STT_MODEL` | | `STT_MODEL` | A smaller, faster model for live only. The transcript after the meeting still uses `STT_MODEL` |
 | `LIVE_SILENCE_MS` | | `800` | A speaker's pause this long ends a line |
-| `LIVE_MAX_UTTERANCE_S` | | `20` | Longer monologues are cut after this many seconds |
+| `LIVE_MAX_UTTERANCE_S` | | `10` | Longer monologues are cut after this many seconds. Shorter means lines appear sooner, but a cut can land mid-word |
+| `LIVE_UPDATE_MS` | | `1500` | The live message is edited at most this often. Discord allows about one edit per second, so don't go below `500` |
 | `LIVE_CONCURRENCY` | | `2` | Parallel requests to the STT server |
 
 **Summaries**
@@ -229,8 +230,8 @@ Tips:
 ## Live transcription
 
 With `LIVE_TRANSCRIPTION=true` the bot posts one message in the voice channel's chat and edits it
-every few seconds with the latest lines (`[00:12] Alice: …`). A line appears about a second or
-two after a speaker pauses, depending on the server. Everyone who can read that chat sees it, so
+every few seconds with the latest lines (`[00:12] Alice: …`). A line appears after a speaker pauses (`LIVE_SILENCE_MS`) plus the
+time the server needs, which is about 1–2 s with a small model and several seconds with a bigger one. Everyone who can read that chat sees it, so
 tell participants. The lines are also saved to `live-transcript.jsonl` in the session folder.
 
 It is meant for following along: lines can be slightly out of order when people talk over each

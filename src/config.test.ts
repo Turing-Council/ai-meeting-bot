@@ -117,6 +117,7 @@ describe('loadConfig', () => {
         stt: expect.objectContaining({ provider: 'openai-compatible', model: 'small', timeoutMs: 15_000, attempts: 2 }),
         silenceMs: 800,
         maxUtteranceMs: 10_000,
+        updateMs: 1_500,
         concurrency: 2,
       });
     });

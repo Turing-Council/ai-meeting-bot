@@ -40,7 +40,8 @@ const BaseSchema = z.object({
   LIVE_TRANSCRIPTION: booleanFlag,
   LIVE_STT_MODEL: optionalString,
   LIVE_SILENCE_MS: withDefault(z.coerce.number().int().min(200), 800),
-  LIVE_MAX_UTTERANCE_S: withDefault(z.coerce.number().min(3), 20),
+  LIVE_MAX_UTTERANCE_S: withDefault(z.coerce.number().min(3), 10),
+  LIVE_UPDATE_MS: withDefault(z.coerce.number().int().min(500), 1500),
   LIVE_CONCURRENCY: withDefault(z.coerce.number().int().min(1), 2),
 });
 
@@ -70,6 +71,8 @@ export interface LiveConfig {
   /** A speaker's pause this long ends an utterance. */
   silenceMs: number;
   maxUtteranceMs: number;
+  /** The live message is edited at most this often. */
+  updateMs: number;
   /** Parallel requests to the STT server. */
   concurrency: number;
 }
@@ -179,6 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: LoadCo
           stt: liveStt(stt, c.LIVE_STT_MODEL),
           silenceMs: c.LIVE_SILENCE_MS,
           maxUtteranceMs: c.LIVE_MAX_UTTERANCE_S * 1000,
+          updateMs: c.LIVE_UPDATE_MS,
           concurrency: c.LIVE_CONCURRENCY,
         }
       : undefined,

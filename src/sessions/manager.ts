@@ -573,7 +573,7 @@ export class SessionManager {
     const { live } = this.config;
     if (!live || !this.liveStt) return undefined;
     const log = this.logger.child({ sessionId: manifest.id });
-    const message = new LiveMessage(log);
+    const message = new LiveMessage(log, live.updateMs);
     const file = path.join(this.store.sessionDir(manifest.id), LIVE_TRANSCRIPT_FILE);
     const transcription = new LiveTranscription({
       stt: this.liveStt,
