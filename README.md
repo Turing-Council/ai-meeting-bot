@@ -1,12 +1,17 @@
-# Turing Voice Bot
+# Turing Council Meeting Bot
 
-A Discord bot that joins a voice channel, records the meeting (one track per speaker plus a mix),
-transcribes and summarizes it, and logs it to Notion as a structured meeting page.
+[![CI](https://github.com/Turing-Council/ai-meeting-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/Turing-Council/ai-meeting-bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+A Discord bot that joins a voice channel and records the meeting (one track per speaker plus a mix).
+It shows a live transcript in the chat while the meeting runs. Afterwards it transcribes and summarizes the meeting
+and logs it to Notion as a structured meeting page. It is built and run by [Turing Council](https://github.com/Turing-Council)
+for its own meetings.
 
 **Set it up → [`docs/usage.md`](docs/usage.md)** (quick setup, commands, configuration, providers, troubleshooting)
 
 Spec: [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · Developer notes: [`docs/developing.md`](docs/developing.md) ·
-Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize, M3 Notion**
+Status: **M0 Setup, M1 Record, M2 Transcribe & Summarize, M3 Notion, live transcription** done · M4 Polish next
 
 ## What works now
 
@@ -156,6 +161,24 @@ src/
   scripts/                 register-commands.ts, process-session.ts, notion-setup.ts
 ```
 
+## Known issues
+
+- **Audio can stop silently in long meetings.** On 25/11 the bot stopped receiving audio after exactly
+  2 h, with nothing in the logs. The cause and the fix plan are in
+  [`docs/incident-2026-11-25-live-transcription.md`](docs/incident-2026-11-25-live-transcription.md).
+  Until it is fixed, check the live transcript every so often during long meetings.
+
 ## Next milestones
 
-- **M4 Polish:** auto-record, cleanup of old audio
+- **M4 Polish:** auto-record, cleanup of old audio, voice-connection logging and a no-audio watchdog
+
+## Contributing
+
+Branch from `main` (`type/short-slug`), open a PR and squash-merge it. `main` is protected: changes go
+through a PR, and the PR title must follow [Conventional Commits](https://www.conventionalcommits.org/)
+(`feat(live): …`, `fix(recorder): …`), because it becomes the commit on `main`. See the org-wide
+[contributing guide](https://github.com/Turing-Council/.github/blob/main/CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE) © Turing Council
