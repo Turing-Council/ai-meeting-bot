@@ -1,0 +1,31 @@
+# Generic PR title check: any scope is allowed. Copy it into a repo (repo-template has it) and
+# scripts/apply-repo-settings.sh makes it a required check there.
+name: PR Title Check
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: PR Title Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
